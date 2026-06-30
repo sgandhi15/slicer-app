@@ -1,4 +1,4 @@
-package com.example.slicer
+package com.example.slicer.processing
 
 private const val TJ_SAMPLING_420 = 2
 private const val TJ_SAMPLING_422 = 1

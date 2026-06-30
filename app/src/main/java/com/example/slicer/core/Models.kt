@@ -1,7 +1,8 @@
-package com.example.slicer
+package com.example.slicer.core
 
 import android.net.Uri
 import android.os.Environment
+import androidx.core.net.toUri
 
 internal const val DEFAULT_QUALITY = 80
 internal const val MIN_QUALITY = 1
@@ -12,7 +13,7 @@ internal const val PREFS_QUALITY_KEY = "last_quality"
 internal const val PREFS_OUTPUT_FOLDER_URI_KEY = "output_folder_uri"
 internal const val PREFS_WELCOME_SCREEN_SEEN_KEY = "welcome_screen_seen"
 
-internal val DEFAULT_OUTPUT_FOLDER_URI: Uri = Uri.parse("content://com.example.slicer.default/output/pictures_slicer")
+internal val DEFAULT_OUTPUT_FOLDER_URI: Uri = "content://com.example.slicer.default/output/pictures_slicer".toUri()
 internal val DEFAULT_OUTPUT_RELATIVE_PATH = "${Environment.DIRECTORY_PICTURES}/Slicer/"
 internal const val DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME = "Pictures/Slicer"
 

@@ -1,4 +1,31 @@
-package com.example.slicer
+package com.example.slicer.home
+
+import com.example.slicer.R
+import com.example.slicer.core.BatchFileResult
+import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME
+import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
+import com.example.slicer.core.DEFAULT_QUALITY
+import com.example.slicer.core.JPEG_MIME_TYPES
+import com.example.slicer.core.MAX_QUALITY
+import com.example.slicer.core.MIN_QUALITY
+import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.core.ProcessingProgress
+import com.example.slicer.core.SlicerScreen
+import com.example.slicer.processing.processImageBatch
+import com.example.slicer.shared.formatBatchSummary
+import com.example.slicer.storage.canWriteToOutputFolder
+import com.example.slicer.storage.clearOutputFolderUri
+import com.example.slicer.storage.isDefaultOutputFolder
+import com.example.slicer.storage.isSupportedJpegUri
+import com.example.slicer.storage.loadBitmapForPreview
+import com.example.slicer.storage.loadSavedOutputFolderUri
+import com.example.slicer.storage.loadSavedQuality
+import com.example.slicer.storage.markWelcomeScreenSeen
+import com.example.slicer.storage.readableName
+import com.example.slicer.storage.saveOutputFolderUri
+import com.example.slicer.storage.saveQuality
+import com.example.slicer.storage.hasSeenWelcomeScreen
+import com.example.slicer.telemetry.logEncoderRuntimeStatus
 
 import android.content.Intent
 import android.net.Uri
@@ -26,6 +53,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,7 +81,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var selectedImages by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var outputFolder by remember { mutableStateOf(DEFAULT_OUTPUT_FOLDER_URI) }
-    var quality by rememberSaveable { mutableStateOf(DEFAULT_QUALITY) }
+    var quality by rememberSaveable { mutableIntStateOf(DEFAULT_QUALITY) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
     var didLoadPreferences by rememberSaveable { mutableStateOf(false) }
     var currentScreen by remember {
@@ -70,7 +99,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     var batchResults by remember { mutableStateOf<List<BatchFileResult>>(emptyList()) }
     var processingJob by remember { mutableStateOf<Job?>(null) }
 
-    var comparePosition by rememberSaveable { mutableStateOf(0.5f) }
+    var comparePosition by rememberSaveable { mutableFloatStateOf(0.5f) }
     var compareSourceBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var compareOutputBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var compareOriginalImage by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -456,7 +485,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                         }
                                     },
                                     isResultListScrollable = true,
-                                    resultListModifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f)
                                 )
                             } else {
                                 NoticeText("No results yet.")

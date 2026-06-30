@@ -1,0 +1,241 @@
+package com.example.slicer.home
+
+import com.example.slicer.core.BatchFileResult
+import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.core.ProcessingProgress
+import com.example.slicer.shared.formatByteCount
+import com.example.slicer.shared.formatSavedPercentage
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun ProcessingPanel(progress: ProcessingProgress) {
+    SectionCard(title = "Processing") {
+        val ratio = if (progress.total <= 0) {
+            0f
+        } else {
+            progress.completed.toFloat() / progress.total.toFloat()
+        }
+
+        LinearProgressIndicator(
+            modifier = Modifier.fillMaxWidth(),
+            progress = { ratio }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(
+            text = "Progress: ${progress.completed} of ${progress.total}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        Text(
+            text = "Compressed: ${progress.compressedCount}  •  Kept original: ${progress.copiedCount}  •  Failed: ${progress.failedCount}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        progress.currentFile?.let {
+            Text(
+                text = "Current: $it",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+internal fun BatchResultsPanel(
+    results: List<BatchFileResult>,
+    onResultClick: (BatchFileResult) -> Unit,
+    modifier: Modifier = Modifier,
+    isResultListScrollable: Boolean = false
+) {
+    if (results.isEmpty()) {
+        NoticeText("No results yet.")
+        return
+    }
+
+    val compressedCount = results.count { it.decision == ProcessingDecision.Compressed }
+    val copiedCount = results.count { it.decision == ProcessingDecision.CopiedOriginal }
+    val failedCount = results.count { it.decision == ProcessingDecision.Failed }
+    val savedBytes = results.sumOf { result ->
+        val input = result.inputBytes
+        val output = result.outputBytes
+        if (input > 0L && output > 0L && output < input) input - output else 0L
+    }
+    val totalInputBytes = results.sumOf { it.inputBytes.coerceAtLeast(0L) }
+    val totalOutputBytes = results.sumOf { it.outputBytes.coerceAtLeast(0L) }
+    val totalSavedPercent = formatSavedPercentage(totalInputBytes, totalOutputBytes)
+
+    SectionCard(title = "Run summary") {
+        Text(
+            text = "Compressed: $compressedCount",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "Kept original: $copiedCount",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.secondary
+        )
+        Text(
+            text = "Failed: $failedCount",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Saved total: ${formatByteCount(savedBytes)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (totalSavedPercent != null) {
+            Text(
+                text = "Saved overall: ${totalSavedPercent}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    val listScrollModifier = if (isResultListScrollable) {
+        modifier.verticalScroll(rememberScrollState())
+    } else {
+        modifier
+    }
+
+    SectionCard(
+        title = "Last run files",
+        modifier = listScrollModifier
+    ) {
+        results.forEachIndexed { index, result ->
+            if (index > 0) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), thickness = 1.dp)
+            }
+            BatchResultRow(
+                result = result,
+                testTag = "slicer-result-row-${index}",
+                onResultClick = {
+                    if (result.decision != ProcessingDecision.Failed && result.outputUri != null) {
+                        onResultClick(result)
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun BatchResultRow(
+    result: BatchFileResult,
+    testTag: String,
+    onResultClick: () -> Unit
+) {
+    val decisionLabel = when (result.decision) {
+        ProcessingDecision.Compressed -> "Compressed"
+        ProcessingDecision.CopiedOriginal -> "Kept original"
+        ProcessingDecision.Failed -> "Failed"
+    }
+
+    val canOpenCompare = result.decision != ProcessingDecision.Failed && result.outputUri != null
+
+    val decisionColor = when (result.decision) {
+        ProcessingDecision.Compressed -> MaterialTheme.colorScheme.primary
+        ProcessingDecision.CopiedOriginal -> MaterialTheme.colorScheme.secondary
+        ProcessingDecision.Failed -> MaterialTheme.colorScheme.error
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (canOpenCompare) {
+                    Modifier.clickable { onResultClick() }
+                } else {
+                    Modifier
+                }
+            )
+            .testTag(testTag),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = result.inputName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            val sizes = if (result.inputBytes > 0L) {
+                val savedPercent = formatSavedPercentage(result.inputBytes, result.outputBytes)
+                if (savedPercent == null) {
+                    "${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}"
+                } else {
+                    "${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}  ($savedPercent)"
+                }
+            } else {
+                "Output size: ${formatByteCount(result.outputBytes)}"
+            }
+
+            Text(
+                text = sizes,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (result.message != null) {
+                Text(
+                    text = result.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Surface(
+            color = decisionColor.copy(alpha = 0.15f),
+            shape = RoundedCornerShape(0.dp)
+        ) {
+            Text(
+                text = decisionLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = decisionColor,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+    }
+}
