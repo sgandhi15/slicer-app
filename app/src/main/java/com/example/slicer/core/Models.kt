@@ -24,6 +24,7 @@ internal val JPEG_EXTENSION_SET = JPEG_EXTENSIONS.toSet()
 internal const val OUTPUT_MIME_TYPE = "image/jpeg"
 
 internal const val DEFAULT_COPY_BUFFER_BYTES = 16_384
+internal const val MAX_COMPRESSION_PIXELS = 24_000_000L
 
 internal const val JPEG_START_OF_IMAGE: Int = 0xFFD8
 internal const val JPEG_START_OF_SCAN: Int = 0xFFDA

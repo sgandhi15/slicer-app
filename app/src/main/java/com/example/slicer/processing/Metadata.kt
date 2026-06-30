@@ -6,7 +6,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 
-private data class ParsedJpegMetadata(
+internal data class ParsedJpegMetadata(
     val nonMetadataSegments: List<ByteArray>,
     val metadataSegments: List<ByteArray>,
     val scanStartIndex: Int
@@ -42,9 +42,7 @@ internal suspend fun Context.preserveJpegMetadata(
     }
 
     return try {
-        val destinationParsed = parseJpegMetadataBlocks(destinationBytes) ?: return false
-
-        val mergedBytes = buildJpegWithSourceMetadata(destinationParsed, sourceParsed, destinationBytes)
+        val mergedBytes = mergeJpegMetadataBytes(sourceParsed, destinationBytes)
         if (mergedBytes == null) {
             return false
         }
@@ -67,7 +65,23 @@ internal suspend fun Context.preserveJpegMetadata(
     }
 }
 
-private fun parseJpegMetadataBlocks(bytes: ByteArray): ParsedJpegMetadata? {
+internal fun mergeJpegMetadataBytes(
+    sourceBytes: ByteArray,
+    destinationBytes: ByteArray
+): ByteArray? {
+    val sourceParsed = parseJpegMetadataBlocks(sourceBytes) ?: return null
+    return mergeJpegMetadataBytes(sourceParsed, destinationBytes)
+}
+
+private fun mergeJpegMetadataBytes(
+    sourceParsed: ParsedJpegMetadata,
+    destinationBytes: ByteArray
+): ByteArray? {
+    val destinationParsed = parseJpegMetadataBlocks(destinationBytes) ?: return null
+    return buildJpegWithSourceMetadata(destinationParsed, sourceParsed, destinationBytes)
+}
+
+internal fun parseJpegMetadataBlocks(bytes: ByteArray): ParsedJpegMetadata? {
     if (bytes.size < 4 || (bytes[0].toInt() and 0xFF) != 0xFF || (bytes[1].toInt() and 0xFF) != 0xD8) {
         return null
     }
@@ -173,10 +187,10 @@ private fun buildJpegWithSourceMetadata(
     output.write(0xFF)
     output.write(0xD8)
 
-    for (segment in destinationParsed.nonMetadataSegments) {
+    for (segment in sourceParsed.metadataSegments) {
         output.write(segment)
     }
-    for (segment in sourceParsed.metadataSegments) {
+    for (segment in destinationParsed.nonMetadataSegments) {
         output.write(segment)
     }
     output.write(destinationBytes, destinationParsed.scanStartIndex, destinationBytes.size - destinationParsed.scanStartIndex)

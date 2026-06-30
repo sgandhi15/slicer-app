@@ -3,38 +3,98 @@ package com.example.slicer.processing
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_422
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
+import com.example.slicer.core.MAX_COMPRESSION_PIXELS
 import com.example.slicer.storage.loadBitmapForCompression
 import com.example.slicer.storage.writeByteArrayToUri
 import com.example.slicer.telemetry.logMozJpegEventTelemetry
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.IOException
+
+internal data class JpegCompressionResult(
+    val succeeded: Boolean,
+    val message: String? = null
+)
+
+private data class ImageBounds(
+    val width: Int,
+    val height: Int
+) {
+    val pixels: Long = width.toLong() * height.toLong()
+}
 
 internal suspend fun Context.compressJpegImage(
     inputUri: Uri,
     outputUri: Uri,
     quality: Int
-): Boolean = withContext(Dispatchers.IO) {
+): JpegCompressionResult = withContext(Dispatchers.IO) {
     runCatching {
+        val bounds = readImageBounds(inputUri)
+            ?: return@runCatching JpegCompressionResult(
+                succeeded = false,
+                message = "Could not read JPEG dimensions; original file was preserved."
+            )
+
+        if (bounds.pixels > MAX_COMPRESSION_PIXELS) {
+            return@runCatching JpegCompressionResult(
+                succeeded = false,
+                message = "Image is too large to compress safely (${bounds.width} x ${bounds.height}); original file was preserved."
+            )
+        }
+
         val bitmap = loadBitmapForCompression(inputUri)
-            ?: throw IOException("Unable to decode JPEG data.")
+            ?: return@runCatching JpegCompressionResult(
+                succeeded = false,
+                message = "Unable to decode JPEG data; original file was preserved."
+            )
         try {
             val encoded = bitmap.encodeJpegViaMozJpeg(quality)
-                ?: throw IOException("MozJPEG compression failed.")
+                ?: return@runCatching JpegCompressionResult(
+                    succeeded = false,
+                    message = "MozJPEG compression failed; original file was preserved."
+                )
 
             val saved = writeByteArrayToUri(outputUri, encoded)
 
             if (!saved) {
-                throw IOException("Could not write MozJPEG output.")
+                return@runCatching JpegCompressionResult(
+                    succeeded = false,
+                    message = "Could not write MozJPEG output; original file was preserved."
+                )
             }
+
+            JpegCompressionResult(succeeded = true)
         } finally {
             bitmap.recycle()
         }
+    }.getOrElse { error ->
+        JpegCompressionResult(
+            succeeded = false,
+            message = error.message ?: "MozJPEG compression failed; original file was preserved."
+        )
+    }
+}
+
+private fun Context.readImageBounds(uri: Uri): ImageBounds? {
+    val options = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+
+    val decoded = runCatching {
+        contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, options)
+        }
     }.isSuccess
+
+    if (!decoded || options.outWidth <= 0 || options.outHeight <= 0) {
+        return null
+    }
+
+    return ImageBounds(width = options.outWidth, height = options.outHeight)
 }
 
 private data class MozJpegAttempt(

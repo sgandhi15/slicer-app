@@ -129,18 +129,23 @@ private suspend fun processSingleImage(
 ): BatchFileResult {
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
-    val compressionSucceeded = runCatching {
+    val compressionResult = runCatching {
         context.compressJpegImage(inputUri, outputUri, q)
-    }.getOrDefault(false)
+    }.getOrElse { error ->
+        JpegCompressionResult(
+            succeeded = false,
+            message = error.message ?: "MozJPEG compression failed; original file was preserved."
+        )
+    }
 
-    if (!compressionSucceeded) {
+    if (!compressionResult.succeeded) {
         return fallbackToOriginalOrFail(
             context = context,
             inputUri = inputUri,
             inputName = inputName,
             inputBytes = inputBytes,
             outputUri = outputUri,
-            outputLabel = "Compression failed and fallback copy failed."
+            outputLabel = compressionResult.message ?: "MozJPEG compression failed; original file was preserved."
         )
     }
 
