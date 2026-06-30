@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Slicer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">@color/slicer_copper</item>
+        <item name="android:navigationBarColor">@color/slicer_paper</item>
+        <item name="android:statusBarColor">@color/slicer_paper</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/logo</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/splash_icon_background</item>
+    </style>
+</resources>

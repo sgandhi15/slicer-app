@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="slicer_ink">#FFFFFF</color>
+    <color name="slicer_copper">#0F172A</color>
+    <color name="slicer_paper">#FFFFFF</color>
+    <color name="splash_background">#FFFFFF</color>
+    <color name="splash_icon_background">#F4F6FA</color>
+</resources>
