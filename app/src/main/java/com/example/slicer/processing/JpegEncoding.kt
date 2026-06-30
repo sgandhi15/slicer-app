@@ -4,9 +4,8 @@ import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_422
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
 import com.example.slicer.storage.loadBitmapForCompression
-import com.example.slicer.storage.writeBitmapToUri
 import com.example.slicer.storage.writeByteArrayToUri
-import com.example.slicer.telemetry.logMozJpegFallbackTelemetry
+import com.example.slicer.telemetry.logMozJpegEventTelemetry
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -25,15 +24,12 @@ internal suspend fun Context.compressJpegImage(
             ?: throw IOException("Unable to decode JPEG data.")
         try {
             val encoded = bitmap.encodeJpegViaMozJpeg(quality)
+                ?: throw IOException("MozJPEG compression failed.")
 
-            val saved = if (encoded != null) {
-                writeByteArrayToUri(outputUri, encoded) || writeBitmapToUri(bitmap, outputUri, quality)
-            } else {
-                writeBitmapToUri(bitmap, outputUri, quality)
-            }
+            val saved = writeByteArrayToUri(outputUri, encoded)
 
             if (!saved) {
-                throw IOException("JPEG compression failed.")
+                throw IOException("Could not write MozJPEG output.")
             }
         } finally {
             bitmap.recycle()
@@ -59,13 +55,13 @@ private data class MozJpegAttempt(
 
 private fun Bitmap.encodeJpegViaMozJpeg(quality: Int): ByteArray? {
     if (!MozJpegNative.isAvailable) {
-        logMozJpegFallbackTelemetry("MozJPEG native module unavailable; ${MozJpegNative.runtimeStatusMessage()}; framework fallback will be used.")
+        logMozJpegEventTelemetry("MozJPEG native module unavailable; ${MozJpegNative.runtimeStatusMessage()}.")
         return null
     }
 
     val rgbBytes = toRgbByteArray()
     if (rgbBytes.isEmpty()) {
-        logMozJpegFallbackTelemetry("MozJPEG encoding failed; bitmap pixel extraction returned empty buffer; framework fallback will be used.")
+        logMozJpegEventTelemetry("MozJPEG encoding failed; bitmap pixel extraction returned empty buffer.")
         return null
     }
 
@@ -103,13 +99,13 @@ private fun Bitmap.encodeJpegViaMozJpeg(quality: Int): ByteArray? {
         }
 
         if (attempt != attempts.first()) {
-            logMozJpegFallbackTelemetry("MozJPEG native output succeeded using fallback attempt: ${attempt.describe}")
+            logMozJpegEventTelemetry("MozJPEG native output succeeded using alternate attempt: ${attempt.describe}")
         }
 
         return encoded
     }
 
-    logMozJpegFallbackTelemetry("MozJPEG encoding failed; $failureReason; framework fallback will be used.")
+    logMozJpegEventTelemetry("MozJPEG encoding failed; $failureReason.")
 
     return null
 }

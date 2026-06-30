@@ -497,17 +497,6 @@ private fun rotateBitmapForOrientation(bitmap: Bitmap, orientation: Int): Bitmap
     }.getOrNull() ?: bitmap
 }
 
-internal fun Context.writeBitmapToUri(uriBitmapSource: Bitmap, outputUri: Uri, quality: Int): Boolean {
-    return runCatching {
-        contentResolver.openOutputStream(outputUri, "w")?.use { output ->
-            val saved = uriBitmapSource.compress(Bitmap.CompressFormat.JPEG, quality, output)
-            if (!saved) {
-                throw IOException("Bitmap compress failed.")
-            }
-        } ?: throw IOException("Could not open output file for writing.")
-    }.isSuccess
-}
-
 internal fun Context.writeByteArrayToUri(outputUri: Uri, data: ByteArray): Boolean {
     if (data.isEmpty()) return false
 

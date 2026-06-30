@@ -131,7 +131,7 @@ private suspend fun processSingleImage(
 
     val compressionSucceeded = runCatching {
         context.compressJpegImage(inputUri, outputUri, q)
-    }.isSuccess
+    }.getOrDefault(false)
 
     if (!compressionSucceeded) {
         return fallbackToOriginalOrFail(

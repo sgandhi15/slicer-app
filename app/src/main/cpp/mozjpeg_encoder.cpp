@@ -6,7 +6,7 @@
 #endif
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_example_slicer_MozJpegNative_compressJpeg(
+Java_com_example_slicer_processing_MozJpegNative_compressJpeg(
     JNIEnv* env,
     jclass,
     jbyteArray pixelData,
@@ -97,7 +97,7 @@ Java_com_example_slicer_MozJpegNative_compressJpeg(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_slicer_MozJpegNative_isMozJpegEnabled(
+Java_com_example_slicer_processing_MozJpegNative_isMozJpegEnabled(
     JNIEnv*,
     jclass
 ) {
