@@ -93,21 +93,11 @@ internal fun WelcomeScreen(onContinue: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Surface(
-                    modifier = Modifier.size(width = 240.dp, height = 220.dp),
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.28f)
-                    )
-                ) {
-                    CompressionIllustration(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp)
-                    )
-                }
+                CompressionIllustration(
+                    modifier = Modifier
+                        .size(width = 240.dp, height = 220.dp)
+                        .padding(16.dp)
+                )
 
                 Spacer(modifier = Modifier.height(36.dp))
 
@@ -152,17 +142,17 @@ internal fun WelcomeScreen(onContinue: () -> Unit) {
 private fun CompressionIllustration(modifier: Modifier = Modifier) {
     Box(modifier = modifier) {
         CompressionPreviewCard(
-            width = 148.dp,
-            height = 170.dp,
+            width = 160.dp,
+            height = 160.dp,
             isOptimized = false,
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .graphicsLayer { alpha = 0.42f }
+                .graphicsLayer { alpha = 0.56f }
         )
 
         CompressionPreviewCard(
-            width = 118.dp,
-            height = 136.dp,
+            width = 128.dp,
+            height = 128.dp,
             isOptimized = true,
             modifier = Modifier.align(Alignment.BottomEnd)
         )
