@@ -156,39 +156,63 @@ internal fun BatchResultsPanel(
     val totalOutputBytes = results.sumOf { it.outputBytes.coerceAtLeast(0L) }
     val totalSavedPercent = formatSavedPercentage(totalInputBytes, totalOutputBytes)
 
-    SectionCard(title = "Run summary") {
-        Text(
-            text = "Compressed: $compressedCount",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = "Kept original: $copiedCount",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.secondary
-        )
-        Text(
-            text = "Failed: $failedCount",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.error
-        )
+    Text(
+        text = "Run summary",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onSurface
+    )
 
-        Spacer(modifier = Modifier.height(8.dp))
+    Spacer(modifier = Modifier.height(12.dp))
 
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
         Text(
-            text = "Saved total: ${formatByteCount(savedBytes)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "${formatByteCount(savedBytes)} saved",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
         )
 
         if (totalSavedPercent != null) {
             Text(
-                text = "Saved overall: ${totalSavedPercent}",
-                style = MaterialTheme.typography.bodySmall,
+                text = "$totalSavedPercent smaller",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(modifier = Modifier.fillMaxWidth()) {
+            ProcessingStat(
+                value = compressedCount,
+                label = "Compressed",
+                modifier = Modifier.weight(1f)
+            )
+            ProcessingStat(
+                value = copiedCount,
+                label = "Copied",
+                modifier = Modifier.weight(1f)
+            )
+            ProcessingStat(
+                value = failedCount,
+                label = "Failed",
+                modifier = Modifier.weight(1f),
+                isError = failedCount > 0
+            )
+        }
     }
+
+    Spacer(modifier = Modifier.height(32.dp))
+
+    Text(
+        text = "Last run files",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onSurface
+    )
 
     Spacer(modifier = Modifier.height(12.dp))
 
@@ -198,13 +222,12 @@ internal fun BatchResultsPanel(
         modifier
     }
 
-    SectionCard(
-        title = "Last run files",
-        modifier = listScrollModifier
+    Column(
+        modifier = listScrollModifier.fillMaxWidth()
     ) {
         results.forEachIndexed { index, result ->
             if (index > 0) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), thickness = 1.dp)
+                HorizontalDivider(thickness = 1.dp)
             }
             BatchResultRow(
                 result = result,
@@ -216,6 +239,7 @@ internal fun BatchResultsPanel(
                 }
             )
         }
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
@@ -249,6 +273,7 @@ private fun BatchResultRow(
                     Modifier
                 }
             )
+            .padding(vertical = 12.dp)
             .testTag(testTag),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Top
