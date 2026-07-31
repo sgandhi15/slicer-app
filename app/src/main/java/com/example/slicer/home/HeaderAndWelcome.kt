@@ -3,10 +3,14 @@ package com.example.slicer.home
 import com.example.slicer.R
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Arrangement
@@ -14,15 +18,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 
 @Composable
@@ -61,63 +71,151 @@ internal fun AppHeader() {
 
 @Composable
 internal fun WelcomeScreen(onContinue: () -> Unit) {
-    Column(
+    Surface(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 20.dp)
             .testTag("slicer-welcome-screen"),
-        horizontalAlignment = Alignment.Start
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary
     ) {
         Column(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.Center
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Image(
-                painter = painterResource(id = R.drawable.logo),
-                contentDescription = "Slicer logo",
-                modifier = Modifier.size(84.dp)
-            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Surface(
+                    modifier = Modifier.size(width = 240.dp, height = 220.dp),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.28f)
+                    )
+                ) {
+                    CompressionIllustration(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(36.dp))
 
-            Text(
-                text = "Welcome to Slicer",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold
-            )
+                Text(
+                    text = "Welcome to Slicer",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                )
 
-            Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-            Text(
-                text = "Reduce image sizes quickly and privately on device.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+                Text(
+                    text = "Make images lighter, without giving up privacy.",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    textAlign = TextAlign.Center
+                )
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onContinue,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+                shape = MaterialTheme.shapes.small,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("Get started", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            }
 
-            Text(
-                text = "Pick a few photos, adjust quality, and save optimized outputs to a folder.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Spacer(modifier = Modifier.height(12.dp))
         }
+    }
+}
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = onContinue,
+@Composable
+private fun CompressionIllustration(modifier: Modifier = Modifier) {
+    Box(modifier = modifier) {
+        CompressionPreviewCard(
+            width = 148.dp,
+            height = 170.dp,
+            isOptimized = false,
             modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            shape = MaterialTheme.shapes.small
-        ) {
-            Text("Get started", fontSize = 18.sp)
-        }
+                .align(Alignment.TopStart)
+                .graphicsLayer { alpha = 0.42f }
+        )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        CompressionPreviewCard(
+            width = 118.dp,
+            height = 136.dp,
+            isOptimized = true,
+            modifier = Modifier.align(Alignment.BottomEnd)
+        )
+    }
+}
+
+@Composable
+private fun CompressionPreviewCard(
+    width: Dp,
+    height: Dp,
+    isOptimized: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    Surface(
+        modifier = modifier.size(width = width, height = height),
+        shape = MaterialTheme.shapes.small,
+        color = colorScheme.surface,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isOptimized) colorScheme.primary else colorScheme.outline
+        )
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp)
+        ) {
+            drawRect(colorScheme.surfaceVariant)
+            drawCircle(
+                color = colorScheme.primary.copy(alpha = if (isOptimized) 0.42f else 0.24f),
+                radius = size.minDimension * 0.1f,
+                center = center.copy(
+                    x = size.width * 0.72f,
+                    y = size.height * 0.28f
+                )
+            )
+
+            val mountain = Path().apply {
+                moveTo(0f, size.height)
+                lineTo(size.width * 0.34f, size.height * 0.48f)
+                lineTo(size.width * 0.56f, size.height * 0.72f)
+                lineTo(size.width * 0.72f, size.height * 0.56f)
+                lineTo(size.width, size.height)
+                close()
+            }
+            drawPath(
+                path = mountain,
+                color = colorScheme.onPrimaryContainer.copy(
+                    alpha = if (isOptimized) 0.88f else 0.56f
+                )
+            )
+        }
     }
 }
