@@ -50,7 +50,7 @@ class SlicerHomeUiTest {
     fun setupScreenAppearsAfterWelcome() {
         composeTestRule.onNodeWithText("Get started").performClick()
         composeTestRule.onNodeWithTag("slicer-setup-screen", useUnmergedTree = true).assertIsDisplayed()
-        composeTestRule.onNodeWithText("Batch setup").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Select images").assertIsDisplayed()
         composeTestRule.onNodeWithText("Continue to quality").assertIsDisplayed()
             .assertIsNotEnabled()
     }

@@ -29,24 +29,30 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,6 +78,7 @@ import com.example.slicer.ui.theme.SlicerTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -107,8 +114,17 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     var isCompareLoading by remember { mutableStateOf(false) }
     var compareError by remember { mutableStateOf<String?>(null) }
     var selectedResultForComparison by remember { mutableStateOf<BatchFileResult?>(null) }
+    var notificationMessage by remember { mutableStateOf<String?>(null) }
+    var isNotificationVisible by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(notificationMessage, isNotificationVisible) {
+        if (isNotificationVisible) {
+            delay(5_000)
+            isNotificationVisible = false
+        }
+    }
 
     LaunchedEffect(currentScreen, selectedResultForComparison) {
         isCompareLoading = false
@@ -169,11 +185,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         quality = context.loadSavedQuality()
         val restoredOutputFolder = context.loadSavedOutputFolderUri()
         outputFolder = restoredOutputFolder
-        status = if (restoredOutputFolder.isDefaultOutputFolder()) {
-            "Using default output folder: ${restoredOutputFolder.readableName()}."
-        } else {
-            "Using saved output folder: ${restoredOutputFolder.readableName()}."
-        }
+        status = null
         didLoadPreferences = true
 
         logEncoderRuntimeStatus()
@@ -183,12 +195,12 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val hasBottomDockedButton = currentScreen == SlicerScreen.Setup ||
         currentScreen == SlicerScreen.Quality ||
         currentScreen == SlicerScreen.Compare ||
+        currentScreen == SlicerScreen.Processing ||
         currentScreen == SlicerScreen.Results
     val contentScrollState = rememberScrollState()
 
-    val contentModifier = modifier
+    val screenContentModifier = Modifier
         .fillMaxSize()
-        .statusBarsPadding()
         .padding(horizontal = 20.dp, vertical = 20.dp)
         .let { base ->
             if (hasBottomDockedButton) base else base.verticalScroll(contentScrollState)
@@ -213,34 +225,33 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val jpegPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        val supportedUris = uris.filter { uri ->
-            context.isSupportedJpegUri(uri)
-        }
+        val supportedUris = uris.filter { uri -> context.isSupportedJpegUri(uri) }
+        val selectedUris = supportedUris.distinct()
 
         val skippedCount = uris.size - supportedUris.size
 
-        selectedImages = supportedUris
+        selectedImages = selectedUris
         selectedResultForComparison = null
         batchResults = emptyList()
-        currentProgress = ProcessingProgress(total = supportedUris.size)
-            status = when {
-                supportedUris.isEmpty() && skippedCount > 0 -> "No supported files selected."
-                supportedUris.isEmpty() -> "No files selected yet."
-                skippedCount > 0 -> "${supportedUris.size} files selected, ${skippedCount} unsupported skipped."
-                else -> "${supportedUris.size} files selected."
-            }
+        currentProgress = ProcessingProgress(total = selectedUris.size)
+        status = when {
+            selectedUris.isEmpty() && skippedCount > 0 -> "No supported files selected."
+            selectedUris.isEmpty() -> "No files selected yet."
+            skippedCount > 0 -> "${selectedUris.size} files selected, ${skippedCount} unsupported skipped."
+            else -> null
+        }
 
-            currentScreen = SlicerScreen.Setup
+        currentScreen = SlicerScreen.Setup
 
-            supportedUris.forEach { uri ->
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                }
+        selectedUris.forEach { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
             }
         }
+    }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -364,74 +375,86 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
             }
         )
     } else {
-        Column(
-            modifier = contentModifier,
-            verticalArrangement = contentArrangement
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.primary)
         ) {
-            AppHeader()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+            ) {
+                AppHeader()
 
-            when (currentScreen) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                Column(
+                    modifier = screenContentModifier,
+                    verticalArrangement = contentArrangement
+                ) {
+                    when (currentScreen) {
                 SlicerScreen.Setup -> {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .testTag("slicer-setup-screen")
                             .fillMaxWidth()
                             .weight(1f)
                     ) {
-                        Column(
+                        BatchSetupContent(
+                            selectedImages = selectedImages,
+                            status = status,
+                            controlsEnabled = !isProcessing,
+                            onSelectImages = { jpegPicker.launch(JPEG_MIME_TYPES) },
+                            onRemoveImage = { uri ->
+                                selectedImages = selectedImages - uri
+                                selectedResultForComparison = null
+                                batchResults = emptyList()
+                                currentProgress = ProcessingProgress(total = selectedImages.size)
+                                status = null
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
-                                .padding(bottom = 76.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Text(
-                                text = "Step 1 of 2 - Select images",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-
-                            SetupSection(
-                                selectedCount = selectedImages.size,
-                                outputFolder = outputFolder,
-                                onSelectImages = { jpegPicker.launch(JPEG_MIME_TYPES) },
-                                onSelectOutput = { folderPicker.launch(null) },
-                                onForgetOutput = {
-                                    outputFolder = DEFAULT_OUTPUT_FOLDER_URI
-                                    context.clearOutputFolderUri()
-                                    status = "Output folder reset to default: ${DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME}."
-                                },
-                                controlsEnabled = !isProcessing
-                            )
-
-                            status?.let { NoticeText(message = it) }
-
-                            if (!canStart) {
-                                Text(
-                                    text = "Select at least one image to continue.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                                .weight(1f)
+                        )
 
                         Surface(
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .navigationBarsPadding(),
                             color = MaterialTheme.colorScheme.background
                         ) {
-                            Button(
-                                onClick = { currentScreen = SlicerScreen.Quality },
-                                enabled = canStart,
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = MaterialTheme.shapes.small
+                                    .padding(top = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Continue to quality")
+                                Text(
+                                    text = if (selectedImages.size == 1) {
+                                        "1 file selected"
+                                    } else {
+                                        "${selectedImages.size} files selected"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                )
+                                Button(
+                                    onClick = { currentScreen = SlicerScreen.Quality },
+                                    enabled = canStart,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp),
+                                    shape = MaterialTheme.shapes.small
+                                ) {
+                                    Text("Continue to quality")
+                                }
                             }
                         }
                     }
@@ -455,17 +478,46 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             QualityStepContent(
                                 quality = quality,
                                 controlsEnabled = !isProcessing,
-                                selectedCount = selectedImages.size,
-                                outputFolderName = outputFolder.readableName(),
-                                onQualityChange = { quality = it },
-                                onEditBatch = { currentScreen = SlicerScreen.Setup }
+                                onQualityChange = { quality = it }
                             )
 
-                            Text(
-                                text = "Each input produces one output. If compression is larger or unsafe, Slicer copies the original file.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            DestinationSection(
+                                outputFolder = outputFolder,
+                                controlsEnabled = !isProcessing,
+                                onSelectOutput = { folderPicker.launch(null) },
+                                onForgetOutput = {
+                                    outputFolder = DEFAULT_OUTPUT_FOLDER_URI
+                                    context.clearOutputFolderUri()
+                                    status = null
+                                    notificationMessage =
+                                        "Reset to $DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME."
+                                    isNotificationVisible = true
+                                }
                             )
+
+                            status?.let { NoticeText(message = it) }
+
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "No image left behind",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "If an image cannot be compressed safely or made smaller, Slicer copies the original to the destination.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
 
                         Surface(
@@ -502,6 +554,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 }
                             }
                         }
+
                     }
                 }
 
@@ -532,20 +585,38 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 }
 
                 SlicerScreen.Processing -> {
-                    Column(modifier = Modifier.testTag("slicer-processing-screen")) {
-                        ProcessingPanel(progress = currentProgress)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        OutlinedButton(
-                            onClick = {
-                                processingJob?.cancel()
-                                status = "Cancelling batch..."
-                            },
+                    Box(
+                        modifier = Modifier
+                            .testTag("slicer-processing-screen")
+                            .fillMaxWidth()
+                            .fillMaxHeight()
+                    ) {
+                        ProcessingPanel(
+                            progress = currentProgress,
                             modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(bottom = 76.dp)
+                        )
+
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .height(52.dp),
-                            shape = MaterialTheme.shapes.small
+                                .navigationBarsPadding(),
+                            color = MaterialTheme.colorScheme.background
                         ) {
-                            Text("Cancel")
+                            OutlinedButton(
+                                onClick = {
+                                    processingJob?.cancel()
+                                    status = "Cancelling batch..."
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp),
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text("Cancel")
+                            }
                         }
                     }
                 }
@@ -605,14 +676,53 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
-                else -> {
-                    // Welcome screen handled separately in the outer branch.
+                        else -> {
+                            // Welcome screen handled separately in the outer branch.
+                        }
+                    }
+
+                    if (!hasBottomDockedButton) {
+                        status?.let {
+                            NoticeText(message = it)
+                        }
+                    }
                 }
             }
+            }
 
-            if (!hasBottomDockedButton) {
-                status?.let {
-                    NoticeText(message = it)
+            AnimatedVisibility(
+                visible = isNotificationVisible && notificationMessage != null,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+            ) {
+                notificationMessage?.let { message ->
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        shadowElevation = 6.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Destination updated",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }

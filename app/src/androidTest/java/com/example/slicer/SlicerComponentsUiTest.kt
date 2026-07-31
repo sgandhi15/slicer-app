@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.home.BatchSetupContent
 import com.example.slicer.home.BatchResultsPanel
 import com.example.slicer.home.QualityStepContent
 import com.example.slicer.ui.theme.SlicerTheme
@@ -22,9 +23,8 @@ class SlicerComponentsUiTest {
     val composeTestRule = createComposeRule()
 
     @Test
-    fun qualityStepShowsBatchAndSelectsWholePresetCard() {
+    fun qualityStepSelectsWholePresetCard() {
         var selectedQuality = 80
-        var editBatchClicked = false
 
         composeTestRule.setContent {
             SlicerTheme {
@@ -32,21 +32,60 @@ class SlicerComponentsUiTest {
                     QualityStepContent(
                         quality = selectedQuality,
                         controlsEnabled = true,
-                        selectedCount = 3,
-                        outputFolderName = "Pictures/Slicer",
-                        onQualityChange = { selectedQuality = it },
-                        onEditBatch = { editBatchClicked = true }
+                        onQualityChange = { selectedQuality = it }
                     )
                 }
             }
         }
 
-        composeTestRule.onNodeWithText("Step 2 of 2 - Choose quality").assertIsDisplayed()
-        composeTestRule.onNodeWithText("3 images").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Compression quality").assertIsDisplayed()
         composeTestRule.onNodeWithTag("quality-preset-small").performClick()
         composeTestRule.runOnIdle { assertTrue(selectedQuality == 55) }
-        composeTestRule.onNodeWithText("Edit batch").performClick()
-        composeTestRule.runOnIdle { assertTrue(editBatchClicked) }
+    }
+
+    @Test
+    fun emptyBatchPickerOpensImageSelection() {
+        var pickerClicked = false
+
+        composeTestRule.setContent {
+            SlicerTheme {
+                BatchSetupContent(
+                    selectedImages = emptyList(),
+                    status = null,
+                    controlsEnabled = true,
+                    onSelectImages = { pickerClicked = true },
+                    onRemoveImage = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("batch-image-picker").performClick()
+        composeTestRule.runOnIdle { assertTrue(pickerClicked) }
+    }
+
+    @Test
+    fun selectedBatchShowsGridAndRemovesOneImage() {
+        val firstUri = Uri.parse("content://com.example.slicer/first.jpg")
+        val secondUri = Uri.parse("content://com.example.slicer/second.jpg")
+        var removedUri: Uri? = null
+
+        composeTestRule.setContent {
+            SlicerTheme {
+                BatchSetupContent(
+                    selectedImages = listOf(firstUri, secondUri),
+                    status = null,
+                    controlsEnabled = true,
+                    onSelectImages = {},
+                    onRemoveImage = { removedUri = it }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Selected images").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("selected-image-$firstUri").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("selected-image-$secondUri").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("remove-image-$firstUri").performClick()
+        composeTestRule.runOnIdle { assertTrue(removedUri == firstUri) }
     }
 
     @Test

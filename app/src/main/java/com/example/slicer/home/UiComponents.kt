@@ -29,42 +29,106 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
-internal fun ProcessingPanel(progress: ProcessingProgress) {
-    SectionCard(title = "Processing") {
-        val ratio = if (progress.total <= 0) {
-            0f
-        } else {
-            progress.completed.toFloat() / progress.total.toFloat()
-        }
+internal fun ProcessingPanel(
+    progress: ProcessingProgress,
+    modifier: Modifier = Modifier
+) {
+    val ratio = if (progress.total <= 0) {
+        0f
+    } else {
+        progress.completed.toFloat() / progress.total.toFloat()
+    }
 
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            text = "Compressing images",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "${progress.completed} / ${progress.total}",
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = 36.sp,
+                lineHeight = 44.sp
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+        )
         LinearProgressIndicator(
             modifier = Modifier.fillMaxWidth(),
             progress = { ratio }
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
         Text(
-            text = "Progress: ${progress.completed} of ${progress.total}",
+            text = "${(ratio * 100).toInt()}% complete",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Text(
-            text = "Compressed: ${progress.compressedCount}  •  Kept original: ${progress.copiedCount}  •  Failed: ${progress.failedCount}",
-            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        progress.currentFile?.let {
+        progress.currentFile?.let { currentFile ->
             Text(
-                text = "Current: $it",
+                text = currentFile,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
+
+        Row(modifier = Modifier.fillMaxWidth()) {
+            ProcessingStat(
+                value = progress.compressedCount,
+                label = "Compressed",
+                modifier = Modifier.weight(1f)
+            )
+            ProcessingStat(
+                value = progress.copiedCount,
+                label = "Copied",
+                modifier = Modifier.weight(1f)
+            )
+            ProcessingStat(
+                value = progress.failedCount,
+                label = "Failed",
+                modifier = Modifier.weight(1f),
+                isError = progress.failedCount > 0
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProcessingStat(
+    value: Int,
+    label: String,
+    modifier: Modifier = Modifier,
+    isError: Boolean = false
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = value.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (isError) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            }
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

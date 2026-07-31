@@ -35,51 +35,23 @@ import kotlin.math.roundToInt
 internal fun QualityStepContent(
     quality: Int,
     controlsEnabled: Boolean,
-    selectedCount: Int,
-    outputFolderName: String,
-    onQualityChange: (Int) -> Unit,
-    onEditBatch: () -> Unit
+    onQualityChange: (Int) -> Unit
 ) {
     var showCustomQuality by rememberSaveable {
         mutableStateOf(QUALITY_PRESETS.none { it.quality == quality })
     }
 
-    Text(
-        text = "Step 2 of 2 - Choose quality",
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary
-    )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "Compression quality",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
 
-    SectionCard(title = "Your batch") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (selectedCount == 1) "1 image" else "$selectedCount images",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = outputFolderName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            OutlinedButton(onClick = onEditBatch, enabled = controlsEnabled) {
-                Text("Edit batch")
-            }
-        }
-    }
-
-    SectionCard(title = "Compression quality") {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             QUALITY_PRESETS.forEach { preset ->
                 val isSelected = quality == preset.quality
                 Surface(
@@ -177,4 +149,5 @@ internal fun QualityStepContent(
             }
         }
     }
+
 }
