@@ -5,28 +5,25 @@ import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.QUALITY_PRESETS
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -35,177 +32,148 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
 @Composable
-internal fun QualitySection(
+internal fun QualityStepContent(
     quality: Int,
     controlsEnabled: Boolean,
-    onChangeRequested: () -> Unit
+    selectedCount: Int,
+    outputFolderName: String,
+    onQualityChange: (Int) -> Unit,
+    onEditBatch: () -> Unit
 ) {
-    val presetLabel = QUALITY_PRESETS.find { it.quality == quality }?.label ?: "Custom"
-    val summary = "$presetLabel • $quality%"
+    var showCustomQuality by rememberSaveable {
+        mutableStateOf(QUALITY_PRESETS.none { it.quality == quality })
+    }
 
-    SectionCard(title = "Quality") {
+    Text(
+        text = "Step 2 of 2 - Choose quality",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary
+    )
+
+    SectionCard(title = "Your batch") {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Compression target",
+                    text = if (selectedCount == 1) "1 image" else "$selectedCount images",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                NoticeText(message = summary)
+                Text(
+                    text = outputFolderName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            Text(
-                text = presetLabel,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Button(
-            onClick = onChangeRequested,
-            enabled = controlsEnabled,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(46.dp)
-                .testTag("qualityChangeButton"),
-            shape = MaterialTheme.shapes.small
-        ) {
-            Text("Change quality")
+            OutlinedButton(onClick = onEditBatch, enabled = controlsEnabled) {
+                Text("Edit batch")
+            }
         }
     }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun QualityBottomSheet(
-    quality: Int,
-    controlsEnabled: Boolean,
-    onQualityChange: (Int) -> Unit,
-    onPresetSelected: (Int) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var showAdvanced by rememberSaveable { mutableStateOf(false) }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.testTag("qualitySheet")
-    ) {
+    SectionCard(title = "Compression quality") {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "Quality",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                QUALITY_PRESETS.forEach { preset ->
-                    val isSelected = quality == preset.quality
-                    Surface(
+            QUALITY_PRESETS.forEach { preset ->
+                val isSelected = quality == preset.quality
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(70.dp)
+                        .testTag("quality-preset-${preset.label.lowercase()}")
+                        .clickable(enabled = controlsEnabled) {
+                            showCustomQuality = false
+                            onQualityChange(preset.quality)
+                        },
+                    shape = MaterialTheme.shapes.small,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.outline
+                        }
+                    )
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(58.dp),
-                        shape = MaterialTheme.shapes.small,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        },
-                        border = BorderStroke(
-                            1.dp,
-                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-                        )
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = preset.label,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = if (isSelected) {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    }
-                                )
-                                Text(
-                                    text = when (preset.label) {
-                                        "Small" -> "Prioritize smaller files."
-                                        "Balanced" -> "Balanced quality and size."
-                                        else -> "Preserve more detail while reducing size."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (isSelected) {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                            }
-
-                            RadioButton(
-                                selected = isSelected,
-                                onClick = { onPresetSelected(preset.quality) },
-                                enabled = controlsEnabled
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${preset.label} - ${preset.quality}%",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
+                            Text(
+                                text = when (preset.label) {
+                                    "Small" -> "Prioritize smaller files."
+                                    "Balanced" -> "Balance quality and file size."
+                                    else -> "Preserve more image detail."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
+
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null,
+                            enabled = controlsEnabled
+                        )
                     }
                 }
             }
 
             OutlinedButton(
-                onClick = { showAdvanced = !showAdvanced },
+                onClick = { showCustomQuality = !showCustomQuality },
                 enabled = controlsEnabled,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(46.dp),
                 shape = MaterialTheme.shapes.small
             ) {
-                Text(if (showAdvanced) "Hide manual controls" else "Adjust manually")
+                Text(if (showCustomQuality) "Hide custom quality" else "Custom quality")
             }
 
-            if (showAdvanced) {
+            if (showCustomQuality) {
                 Spacer(modifier = Modifier.height(4.dp))
-
+                Text(
+                    text = "Quality: $quality%",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
                 Slider(
                     value = quality.toFloat(),
-                    onValueChange = { onQualityChange(it.roundToInt().coerceIn(MIN_QUALITY, MAX_QUALITY)) },
+                    onValueChange = {
+                        onQualityChange(it.roundToInt().coerceIn(MIN_QUALITY, MAX_QUALITY))
+                    },
                     valueRange = MIN_QUALITY.toFloat()..MAX_QUALITY.toFloat(),
                     enabled = controlsEnabled
                 )
-            }
-
-            Button(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = MaterialTheme.shapes.small
-            ) {
-                Text("Done")
             }
         }
     }

@@ -1,13 +1,10 @@
 package com.example.slicer.home
 
-import com.example.slicer.R
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
 import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.JPEG_MIME_TYPES
-import com.example.slicer.core.MAX_QUALITY
-import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.core.SlicerScreen
@@ -29,11 +26,13 @@ import com.example.slicer.telemetry.logEncoderRuntimeStatus
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Spacer
@@ -49,6 +48,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -84,7 +84,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     var quality by rememberSaveable { mutableIntStateOf(DEFAULT_QUALITY) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
     var didLoadPreferences by rememberSaveable { mutableStateOf(false) }
-    var showQualitySheet by rememberSaveable { mutableStateOf(false) }
     var currentScreen by remember {
         mutableStateOf(
             if (context.hasSeenWelcomeScreen()) {
@@ -181,7 +180,10 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     }
 
     val isCompareScreen = currentScreen == SlicerScreen.Compare
-    val hasBottomDockedButton = currentScreen == SlicerScreen.Compare || currentScreen == SlicerScreen.Results
+    val hasBottomDockedButton = currentScreen == SlicerScreen.Setup ||
+        currentScreen == SlicerScreen.Quality ||
+        currentScreen == SlicerScreen.Compare ||
+        currentScreen == SlicerScreen.Results
     val contentScrollState = rememberScrollState()
 
     val contentModifier = modifier
@@ -202,6 +204,10 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         if (didLoadPreferences) {
             context.saveQuality(quality)
         }
+    }
+
+    BackHandler(enabled = currentScreen == SlicerScreen.Quality) {
+        currentScreen = SlicerScreen.Setup
     }
 
     val jpegPicker = rememberLauncherForActivityResult(
@@ -366,52 +372,135 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
 
             when (currentScreen) {
                 SlicerScreen.Setup -> {
-                    Column(
-                        modifier = Modifier.testTag("slicer-setup-screen"),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    Box(
+                        modifier = Modifier
+                            .testTag("slicer-setup-screen")
+                            .fillMaxWidth()
+                            .weight(1f)
                     ) {
-                        SetupSection(
-                            selectedCount = selectedImages.size,
-                            outputFolder = outputFolder,
-                            onSelectImages = { jpegPicker.launch(JPEG_MIME_TYPES) },
-                            onSelectOutput = { folderPicker.launch(null) },
-                            onForgetOutput = {
-                                outputFolder = DEFAULT_OUTPUT_FOLDER_URI
-                                context.clearOutputFolderUri()
-                                status = "Output folder reset to default: ${DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME}."
-                            },
-                            controlsEnabled = !isProcessing
-                        )
-
-                        QualitySection(
-                            quality = quality,
-                            controlsEnabled = !isProcessing,
-                            onChangeRequested = { showQualitySheet = true }
-                        )
-
-                        Text(
-                            text = "Output behavior: each input produces one output. If compression is larger or unsafe, Slicer copies the original file.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        Button(
-                            onClick = { startProcessing() },
-                            enabled = canStart,
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp),
-                            shape = MaterialTheme.shapes.small
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(bottom = 76.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Text("Start Compression")
+                            Text(
+                                text = "Step 1 of 2 - Select images",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            SetupSection(
+                                selectedCount = selectedImages.size,
+                                outputFolder = outputFolder,
+                                onSelectImages = { jpegPicker.launch(JPEG_MIME_TYPES) },
+                                onSelectOutput = { folderPicker.launch(null) },
+                                onForgetOutput = {
+                                    outputFolder = DEFAULT_OUTPUT_FOLDER_URI
+                                    context.clearOutputFolderUri()
+                                    status = "Output folder reset to default: ${DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME}."
+                                },
+                                controlsEnabled = !isProcessing
+                            )
+
+                            status?.let { NoticeText(message = it) }
+
+                            if (!canStart) {
+                                Text(
+                                    text = "Select at least one image to continue.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
-                        if (!canStart) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .navigationBarsPadding(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Button(
+                                onClick = { currentScreen = SlicerScreen.Quality },
+                                enabled = canStart,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp),
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text("Continue to quality")
+                            }
+                        }
+                    }
+                }
+
+                SlicerScreen.Quality -> {
+                    Box(
+                        modifier = Modifier
+                            .testTag("slicer-quality-screen")
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(bottom = 76.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            QualityStepContent(
+                                quality = quality,
+                                controlsEnabled = !isProcessing,
+                                selectedCount = selectedImages.size,
+                                outputFolderName = outputFolder.readableName(),
+                                onQualityChange = { quality = it },
+                                onEditBatch = { currentScreen = SlicerScreen.Setup }
+                            )
+
                             Text(
-                                text = "Select at least one image to continue.",
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = "Each input produces one output. If compression is larger or unsafe, Slicer copies the original file.",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .navigationBarsPadding(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { currentScreen = SlicerScreen.Setup },
+                                    enabled = !isProcessing,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(52.dp),
+                                    shape = MaterialTheme.shapes.small
+                                ) {
+                                    Text("Back")
+                                }
+
+                                Button(
+                                    onClick = { startProcessing() },
+                                    enabled = canStart,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(52.dp),
+                                    shape = MaterialTheme.shapes.small
+                                ) {
+                                    Text("Start compression")
+                                }
+                            }
                         }
                     }
                 }
@@ -529,15 +618,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    if (showQualitySheet) {
-        QualityBottomSheet(
-            quality = quality,
-            controlsEnabled = !isProcessing,
-            onQualityChange = { quality = it },
-            onPresetSelected = { quality = it },
-            onDismiss = { showQualitySheet = false }
-        )
-    }
 }
 
 @Preview(showBackground = true)

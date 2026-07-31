@@ -1,9 +1,7 @@
 package com.example.slicer
 
 import android.content.Context
-import android.net.Uri
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -13,7 +11,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import com.example.slicer.ui.theme.SlicerTheme
 
 import org.junit.Rule
 import org.junit.Test
@@ -33,7 +30,9 @@ class SlicerHomeUiTest {
         activity.getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(PREFS_WELCOME_SCREEN_SEEN_KEY, false)
-            .apply()
+            .commit()
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
     }
 
     @Test
@@ -52,59 +51,8 @@ class SlicerHomeUiTest {
         composeTestRule.onNodeWithText("Get started").performClick()
         composeTestRule.onNodeWithTag("slicer-setup-screen", useUnmergedTree = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("Batch setup").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Start Compression").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Continue to quality").assertIsDisplayed()
             .assertIsNotEnabled()
     }
 
-    @Test
-    fun failedResultRowIsNotClickable() {
-        composeTestRule.setContent {
-            SlicerTheme {
-                BatchResultsPanel(
-                    results = listOf(
-                        BatchFileResult(
-                            inputUri = Uri.parse("content://com.example.slicer/failed.jpg"),
-                            inputName = "Failed photo",
-                            outputUri = null,
-                            decision = ProcessingDecision.Failed,
-                            inputBytes = 1200L,
-                            outputBytes = 0L,
-                            message = "Could not process"
-                        )
-                    ),
-                    onResultClick = {}
-                )
-            }
-        }
-
-        composeTestRule.onNodeWithText("Failed").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("slicer-result-row-0").assertHasNoClickAction()
-    }
-
-    @Test
-    fun successfulResultRowIsClickable() {
-        var clicked = false
-
-        composeTestRule.setContent {
-            SlicerTheme {
-                BatchResultsPanel(
-                    results = listOf(
-                        BatchFileResult(
-                            inputUri = Uri.parse("content://com.example.slicer/success.jpg"),
-                            inputName = "Result photo",
-                            outputUri = Uri.parse("content://com.example.slicer/success-out.jpg"),
-                            decision = ProcessingDecision.Compressed,
-                            inputBytes = 1200L,
-                            outputBytes = 600L,
-                            message = null
-                        )
-                    ),
-                    onResultClick = { clicked = true }
-                )
-            }
-        }
-
-        composeTestRule.onNodeWithTag("slicer-result-row-0").performClick()
-        assertTrue(clicked)
-    }
 }

@@ -51,6 +51,7 @@ internal enum class ProcessingDecision {
 internal enum class SlicerScreen {
     Welcome,
     Setup,
+    Quality,
     Compare,
     Processing,
     Results
