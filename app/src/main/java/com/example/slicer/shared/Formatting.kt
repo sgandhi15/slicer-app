@@ -17,7 +17,7 @@ internal fun formatSavedPercentage(inputBytes: Long, outputBytes: Long): String?
     }
 
     val percent = (saved.toDouble() / inputBytes.toDouble()) * 100.0
-    val precision = if (inputBytes > 0L && percent < 10.0) 1 else 0
+    val precision = if (percent < 10.0) 1 else 0
     return "saved ${if (precision == 0) percent.roundToInt() else "%.1f".format(Locale.US, percent)}%"
 }
 

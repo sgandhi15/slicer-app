@@ -84,6 +84,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     var quality by rememberSaveable { mutableIntStateOf(DEFAULT_QUALITY) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
     var didLoadPreferences by rememberSaveable { mutableStateOf(false) }
+    var showQualitySheet by rememberSaveable { mutableStateOf(false) }
     var currentScreen by remember {
         mutableStateOf(
             if (context.hasSeenWelcomeScreen()) {
@@ -384,9 +385,8 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
 
                         QualitySection(
                             quality = quality,
-                            onQualityChange = { quality = it },
-                            onPresetSelected = { quality = it },
-                            controlsEnabled = !isProcessing
+                            controlsEnabled = !isProcessing,
+                            onChangeRequested = { showQualitySheet = true }
                         )
 
                         Text(
@@ -527,6 +527,16 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+
+    if (showQualitySheet) {
+        QualityBottomSheet(
+            quality = quality,
+            controlsEnabled = !isProcessing,
+            onQualityChange = { quality = it },
+            onPresetSelected = { quality = it },
+            onDismiss = { showQualitySheet = false }
+        )
     }
 }
 

@@ -6,11 +6,11 @@ import androidx.compose.runtime.Composable
 
 private val LightColorScheme = lightColorScheme(
     primary = SlicerPrimary,
-    onPrimary = SlicerPrimaryText,
+    onPrimary = SlicerOnPrimary,
     secondary = SlicerSecondary,
-    onSecondary = SlicerPrimaryText,
+    onSecondary = SlicerOnPrimary,
     tertiary = SlicerTertiary,
-    onTertiary = SlicerPrimaryText,
+    onTertiary = SlicerOnPrimary,
     background = SlicerBackground,
     onBackground = SlicerOnSurface,
     surface = SlicerSurface,
@@ -21,7 +21,7 @@ private val LightColorScheme = lightColorScheme(
     error = SlicerError,
     onError = SlicerOnError,
     primaryContainer = SlicerPrimaryContainer,
-    onPrimaryContainer = SlicerOnSurface,
+    onPrimaryContainer = SlicerOnPrimaryContainer,
     secondaryContainer = SlicerSecondaryContainer,
     onSecondaryContainer = SlicerOnSurface,
     tertiaryContainer = SlicerTertiaryContainer,

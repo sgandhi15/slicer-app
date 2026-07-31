@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Robot head and face. -->
+    <path
+        android:fillColor="@color/slicer_paper"
+        android:pathData="M43,11 L53,11 L53,16 L58,16 L62,20 L62,39 L58,43 L38,43 L34,39 L34,20 L38,16 L43,16 Z" />
+    <path
+        android:fillColor="@color/slicer_copper"
+        android:pathData="M38,21 L58,21 L58,35 L55,38 L41,38 L38,35 Z" />
+    <path
+        android:fillColor="@color/slicer_ink"
+        android:pathData="M42,25 L46,25 L46,29 L42,29 Z M50,25 L54,25 L54,29 L50,29 Z M44,32 L52,32 L52,34 L44,34 Z" />
+    <!-- Body behind the photo. -->
+    <path
+        android:fillColor="@color/slicer_paper"
+        android:pathData="M32,42 L64,42 L69,48 L67,73 L60,78 L36,78 L29,73 L27,48 Z" />
+    <path
+        android:fillColor="@color/slicer_copper"
+        android:pathData="M34,45 L62,45 L65,50 L63,70 L58,74 L38,74 L33,70 L31,50 Z" />
+    <!-- Pixel arms and hands gripping the image. -->
+    <path
+        android:fillColor="@color/slicer_paper"
+        android:pathData="M27,45 L21,45 L21,51 L17,51 L17,61 L21,61 L21,66 L29,66 L29,59 L33,59 L33,49 L27,49 Z M69,45 L75,45 L75,51 L79,51 L79,61 L75,61 L75,66 L67,66 L67,59 L63,59 L63,49 L69,49 Z" />
+    <!-- Photo bends inward under pressure. -->
+    <path
+        android:fillColor="@color/slicer_paper"
+        android:pathData="M23,48 L39,50 L48,54 L57,50 L73,48 L70,67 L57,65 L48,61 L39,65 L26,67 Z" />
+    <path
+        android:fillColor="@color/slicer_ink"
+        android:pathData="M27,52 L40,54 L48,58 L56,54 L69,52 L67,63 L57,61 L48,58 L39,61 L29,63 Z" />
+    <path
+        android:fillColor="@color/slicer_copper"
+        android:pathData="M29,61 L38,55 L44,60 L52,54 L67,62 L67,63 L57,61 L48,58 L39,61 L29,63 Z M59,53 L63,53 L63,57 L59,57 Z" />
+</vector>
