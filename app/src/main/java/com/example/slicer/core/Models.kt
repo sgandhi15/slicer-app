@@ -45,7 +45,8 @@ internal const val MOZJPEG_SUBSAMPLING_444 = 0
 internal enum class ProcessingDecision {
     Compressed,
     CopiedOriginal,
-    Failed
+    Failed,
+    Cancelled
 }
 
 internal enum class SlicerScreen {
@@ -68,6 +69,7 @@ internal data class ProcessingProgress(
     val compressedCount: Int = 0,
     val copiedCount: Int = 0,
     val failedCount: Int = 0,
+    val cancelledCount: Int = 0,
     val currentFile: String? = null
 )
 

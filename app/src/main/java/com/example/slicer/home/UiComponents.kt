@@ -137,7 +137,10 @@ internal fun BatchResultsPanel(
     results: List<BatchFileResult>,
     onResultClick: (BatchFileResult) -> Unit,
     modifier: Modifier = Modifier,
-    isResultListScrollable: Boolean = false
+    isResultListScrollable: Boolean = false,
+    persistedInputBytes: Long? = null,
+    persistedOutputBytes: Long? = null,
+    persistedSavedBytes: Long? = null
 ) {
     if (results.isEmpty()) {
         NoticeText("No results yet.")
@@ -147,14 +150,24 @@ internal fun BatchResultsPanel(
     val compressedCount = results.count { it.decision == ProcessingDecision.Compressed }
     val copiedCount = results.count { it.decision == ProcessingDecision.CopiedOriginal }
     val failedCount = results.count { it.decision == ProcessingDecision.Failed }
-    val savedBytes = results.sumOf { result ->
+    val cancelledCount = results.count { it.decision == ProcessingDecision.Cancelled }
+    val successfulResults = results.filter {
+        it.decision == ProcessingDecision.Compressed || it.decision == ProcessingDecision.CopiedOriginal
+    }
+    val savedBytes = persistedSavedBytes ?: successfulResults.sumOf { result ->
         val input = result.inputBytes
         val output = result.outputBytes
         if (input > 0L && output > 0L && output < input) input - output else 0L
     }
-    val totalInputBytes = results.sumOf { it.inputBytes.coerceAtLeast(0L) }
-    val totalOutputBytes = results.sumOf { it.outputBytes.coerceAtLeast(0L) }
-    val totalSavedPercent = formatSavedPercentage(totalInputBytes, totalOutputBytes)
+    val totalInputBytes = persistedInputBytes
+        ?: successfulResults.sumOf { it.inputBytes.coerceAtLeast(0L) }
+    val totalOutputBytes = persistedOutputBytes
+        ?: successfulResults.sumOf { it.outputBytes.coerceAtLeast(0L) }
+    val totalSavedPercent = if (failedCount == 0 && cancelledCount == 0) {
+        formatSavedPercentage(totalInputBytes, totalOutputBytes)
+    } else {
+        null
+    }
 
     Text(
         text = "Run summary",
@@ -233,7 +246,9 @@ internal fun BatchResultsPanel(
                 result = result,
                 testTag = "slicer-result-row-${index}",
                 onResultClick = {
-                    if (result.decision != ProcessingDecision.Failed && result.outputUri != null) {
+                    if (result.decision != ProcessingDecision.Failed &&
+                        result.decision != ProcessingDecision.Cancelled && result.outputUri != null
+                    ) {
                         onResultClick(result)
                     }
                 }
@@ -253,14 +268,17 @@ private fun BatchResultRow(
         ProcessingDecision.Compressed -> "Compressed"
         ProcessingDecision.CopiedOriginal -> "Kept original"
         ProcessingDecision.Failed -> "Failed"
+        ProcessingDecision.Cancelled -> "Cancelled"
     }
 
-    val canOpenCompare = result.decision != ProcessingDecision.Failed && result.outputUri != null
+    val canOpenCompare = result.decision != ProcessingDecision.Failed &&
+        result.decision != ProcessingDecision.Cancelled && result.outputUri != null
 
     val decisionColor = when (result.decision) {
         ProcessingDecision.Compressed -> MaterialTheme.colorScheme.primary
         ProcessingDecision.CopiedOriginal -> MaterialTheme.colorScheme.secondary
         ProcessingDecision.Failed -> MaterialTheme.colorScheme.error
+        ProcessingDecision.Cancelled -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Row(

@@ -3,8 +3,10 @@ package com.example.slicer
 import android.net.Uri
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -109,7 +111,7 @@ class SlicerComponentsUiTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Failed").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("Failed").assertCountEquals(2)
         composeTestRule.onNodeWithTag("slicer-result-row-0").assertHasNoClickAction()
     }
 

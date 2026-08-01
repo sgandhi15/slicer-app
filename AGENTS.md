@@ -27,3 +27,19 @@ Keep color usage minimal:
 - Do not use orange for errors or warnings.
 - Do not introduce gradients, extra accent colors, or new semantic colors unless a concrete UI state requires them.
 - Maintain accessible contrast, including white content on the primary orange.
+
+## Code Organization
+
+- Keep Kotlin files focused and preferably below 500 lines. Split files by responsibility before they become difficult to navigate.
+- Keep app-wide constants and shared data structures in `core/Models.kt` or another focused file under `core/`.
+- Separate processing, storage I/O, metadata, and compression logic into focused files.
+- Split UI into small composables organized by screen or screen region, such as setup, quality, comparison, processing, and results.
+- Prefer small, composable functions over files or functions that coordinate unrelated responsibilities.
+
+## Kotlin Conventions
+
+- Use the narrowest practical visibility. Keep file-local implementation details `private` and use `internal` for declarations shared across the app module.
+- Remove dead code, no-op stubs, unused declarations, and permanently constant branches when they are identified.
+- Preserve existing behavior and naming unless the requested change or a necessary refactor requires otherwise.
+- Avoid broad cleanup churn unrelated to the current task.
+- Run relevant behavior-driven tests and verification commands after refactoring.

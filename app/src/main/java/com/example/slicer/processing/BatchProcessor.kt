@@ -1,122 +1,57 @@
 package com.example.slicer.processing
 
-import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.BatchFileResult
-import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.storage.createOutputDocument
 import com.example.slicer.storage.copyUriContent
-import com.example.slicer.storage.queryExistingOutputNames
 import com.example.slicer.storage.resolveContentSize
-import com.example.slicer.storage.resolveDisplayName
-import com.example.slicer.storage.sanitizeOutputFileName
-import com.example.slicer.storage.uniqueOutputName
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-internal suspend fun processImageBatch(
+internal suspend fun processBatchItem(
     context: Context,
-    inputUris: List<Uri>,
+    inputUri: Uri,
+    inputName: String,
     outputFolderUri: Uri,
+    outputName: String,
+    existingOutputUri: Uri?,
     quality: Int,
-    onProgress: suspend (ProcessingProgress) -> Unit,
-    onFileProcessed: suspend (BatchFileResult) -> Unit
-): List<BatchFileResult> = withContext(Dispatchers.IO) {
-    if (inputUris.isEmpty()) {
-        return@withContext emptyList()
-    }
+    inputBytes: Long,
+    onOutputCreated: suspend (Uri) -> Unit
+): BatchFileResult = withContext(Dispatchers.IO) {
+    val outputUri = existingOutputUri?.takeIf { context.canReuseOutputUri(it) }
+        ?: context.createOutputDocument(outputFolderUri, outputName)
+        ?: return@withContext BatchFileResult(
+            inputUri = inputUri,
+            inputName = inputName,
+            outputUri = null,
+            decision = ProcessingDecision.Failed,
+            inputBytes = inputBytes,
+            outputBytes = -1L,
+            message = "Could not create output file in selected folder: $outputName."
+        )
 
-    val usedNames = context.queryExistingOutputNames(outputFolderUri).toMutableSet()
-    val results = mutableListOf<BatchFileResult>()
-
-    var compressedCount = 0
-    var copiedCount = 0
-    var failedCount = 0
-
-    val total = inputUris.size
-    withContext(Dispatchers.Main) {
-        onProgress(ProcessingProgress(total = total))
-    }
-
-    inputUris.forEachIndexed { index, inputUri ->
-        val inputName = context.resolveDisplayName(inputUri)
-        val safeInputName = sanitizeOutputFileName(inputName)
-        val outputName = context.uniqueOutputName(baseName = safeInputName, usedNames = usedNames)
-        val inputBytes = context.resolveContentSize(inputUri)
-
-        withContext(Dispatchers.Main) {
-            onProgress(
-                ProcessingProgress(
-                    total = total,
-                    completed = index,
-                    compressedCount = compressedCount,
-                    copiedCount = copiedCount,
-                    failedCount = failedCount,
-                    currentFile = inputName
-                )
-            )
-        }
-
-        val outputUri = context.createOutputDocument(outputFolderUri, outputName)
-        val result = if (outputUri == null) {
-            BatchFileResult(
-                inputUri = inputUri,
-                inputName = inputName,
-                outputUri = null,
-                decision = ProcessingDecision.Failed,
-                inputBytes = inputBytes,
-                outputBytes = -1L,
-                message = "Could not create output file in selected folder: $outputName. Re-select output folder or try another folder."
-            )
-        } else {
-            processSingleImage(
-                context = context,
-                inputUri = inputUri,
-                inputName = inputName,
-                outputUri = outputUri,
-                quality = quality,
-                inputBytes = inputBytes
-            )
-        }
-
-        results.add(result)
-        withContext(Dispatchers.Main) {
-            onFileProcessed(result)
-        }
-        when (result.decision) {
-            ProcessingDecision.Compressed -> compressedCount++
-            ProcessingDecision.CopiedOriginal -> copiedCount++
-            ProcessingDecision.Failed -> failedCount++
-        }
-
-        withContext(Dispatchers.Main) {
-            onProgress(
-                ProcessingProgress(
-                    total = total,
-                    completed = index + 1,
-                    compressedCount = compressedCount,
-                    copiedCount = copiedCount,
-                    failedCount = failedCount,
-                    currentFile = inputName
-                )
-            )
-        }
-    }
-
-    Log.i(
-        LOG_TAG,
-        "Encoder telemetry: isMozJpegEnabled=${MozJpegNative.isMozJpegFeatureEnabled}, " +
-            "fallbackUsages=${copiedCount + failedCount}/${results.size}, " +
-            "compressed=${compressedCount}, copied=${copiedCount}, failed=${failedCount}"
+    onOutputCreated(outputUri)
+    processSingleImage(
+        context = context,
+        inputUri = inputUri,
+        inputName = inputName,
+        outputUri = outputUri,
+        quality = quality,
+        inputBytes = inputBytes
     )
+}
 
-    results
+private fun Context.canReuseOutputUri(outputUri: Uri): Boolean {
+    return runCatching {
+        contentResolver.openFileDescriptor(outputUri, "rw")?.use { }
+            ?: error("Could not reopen existing output.")
+    }.isSuccess
 }
 
 private suspend fun processSingleImage(

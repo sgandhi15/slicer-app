@@ -6,13 +6,9 @@ import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
 import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.JPEG_MIME_TYPES
 import com.example.slicer.core.ProcessingDecision
-import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.core.SlicerScreen
-import com.example.slicer.processing.processImageBatch
-import com.example.slicer.shared.formatBatchSummary
 import com.example.slicer.storage.canWriteToOutputFolder
 import com.example.slicer.storage.clearOutputFolderUri
-import com.example.slicer.storage.isDefaultOutputFolder
 import com.example.slicer.storage.isSupportedJpegUri
 import com.example.slicer.storage.loadBitmapForPreview
 import com.example.slicer.storage.loadSavedOutputFolderUri
@@ -25,7 +21,10 @@ import com.example.slicer.storage.hasSeenWelcomeScreen
 import com.example.slicer.telemetry.logEncoderRuntimeStatus
 
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -63,9 +62,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -74,19 +73,26 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.slicer.ui.theme.SlicerTheme
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
 fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    var selectedImages by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val homeViewModel: HomeViewModel = viewModel()
+    val durableState by homeViewModel.uiState.collectAsStateWithLifecycle()
+    var selectedImages by rememberSaveable(
+        stateSaver = listSaver<List<Uri>, String>(
+            save = { images -> images.map(Uri::toString) },
+            restore = { saved -> saved.map(Uri::parse) }
+        )
+    ) { mutableStateOf<List<Uri>>(emptyList()) }
     var outputFolder by remember { mutableStateOf(DEFAULT_OUTPUT_FOLDER_URI) }
     var quality by rememberSaveable { mutableIntStateOf(DEFAULT_QUALITY) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
@@ -101,11 +107,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    var isProcessing by remember { mutableStateOf(false) }
-    var currentProgress by remember { mutableStateOf(ProcessingProgress()) }
-    var batchResults by remember { mutableStateOf<List<BatchFileResult>>(emptyList()) }
-    var processingJob by remember { mutableStateOf<Job?>(null) }
-
     var comparePosition by rememberSaveable { mutableFloatStateOf(0.5f) }
     var compareSourceBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var compareOutputBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -117,7 +118,9 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     var notificationMessage by remember { mutableStateOf<String?>(null) }
     var isNotificationVisible by remember { mutableStateOf(false) }
 
-    val coroutineScope = rememberCoroutineScope()
+    val isProcessing = durableState.isProcessing || durableState.isStarting
+    val currentProgress = durableState.progress
+    val batchResults = durableState.results
 
     LaunchedEffect(notificationMessage, isNotificationVisible) {
         if (isNotificationVisible) {
@@ -191,6 +194,25 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         logEncoderRuntimeStatus()
     }
 
+    LaunchedEffect(durableState.batchId, durableState.batchState, currentScreen, didLoadPreferences) {
+        if (!didLoadPreferences || currentScreen == SlicerScreen.Welcome || currentScreen == SlicerScreen.Compare) {
+            return@LaunchedEffect
+        }
+        when {
+            durableState.isProcessing -> currentScreen = SlicerScreen.Processing
+            durableState.needsDestination -> currentScreen = SlicerScreen.Processing
+            durableState.isTerminal -> currentScreen = SlicerScreen.Results
+        }
+    }
+
+    LaunchedEffect(durableState.error) {
+        durableState.error?.let { error ->
+            status = error
+            currentScreen = SlicerScreen.Quality
+            homeViewModel.clearError()
+        }
+    }
+
     val isCompareScreen = currentScreen == SlicerScreen.Compare
     val hasBottomDockedButton = currentScreen == SlicerScreen.Setup ||
         currentScreen == SlicerScreen.Quality ||
@@ -231,9 +253,8 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         val skippedCount = uris.size - supportedUris.size
 
         selectedImages = selectedUris
+        homeViewModel.dismissCurrentBatch()
         selectedResultForComparison = null
-        batchResults = emptyList()
-        currentProgress = ProcessingProgress(total = selectedUris.size)
         status = when {
             selectedUris.isEmpty() && skippedCount > 0 -> "No supported files selected."
             selectedUris.isEmpty() -> "No files selected yet."
@@ -270,7 +291,12 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
             if (persistenceGranted && usable) {
                 outputFolder = uri
                 context.saveOutputFolderUri(uri)
-                status = "Output folder selected and saved."
+                if (durableState.needsDestination) {
+                    status = "Resuming batch with the new output folder..."
+                    homeViewModel.replaceDestination(uri)
+                } else {
+                    status = "Output folder selected and saved."
+                }
             } else {
                 outputFolder = DEFAULT_OUTPUT_FOLDER_URI
                 context.clearOutputFolderUri()
@@ -282,89 +308,38 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 }
             }
             selectedResultForComparison = null
-            batchResults = emptyList()
-            currentProgress = ProcessingProgress()
+            if (!durableState.needsDestination) homeViewModel.dismissCurrentBatch()
         }
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { }
+
     val canStart = selectedImages.isNotEmpty() && !isProcessing
+
+    fun startPersistedBatch(files: List<Uri>, folder: Uri, qualityValue: Int) {
+        status = "Preparing batch..."
+        currentScreen = SlicerScreen.Processing
+        homeViewModel.startBatch(files, folder, qualityValue)
+    }
 
     fun startProcessing() {
         selectedResultForComparison = null
         val folder = outputFolder
-        if (!context.canWriteToOutputFolder(folder)) {
-            if (!folder.isDefaultOutputFolder()) {
-                context.clearOutputFolderUri()
-            }
-            outputFolder = DEFAULT_OUTPUT_FOLDER_URI
-            status = if (folder.isDefaultOutputFolder()) {
-                "Default output folder is currently unavailable. Check storage access and choose another location if needed."
-            } else {
-                "Output folder permission is no longer available. Reset to default output folder."
-            }
-            currentScreen = SlicerScreen.Setup
-            return
-        }
-
         val files = selectedImages.toList()
         if (files.isEmpty()) {
             status = "No images selected."
             return
         }
 
-        isProcessing = true
-        status = "Preparing batch..."
-        batchResults = emptyList()
-        currentProgress = ProcessingProgress(total = files.size)
-        currentScreen = SlicerScreen.Processing
-
-        processingJob = coroutineScope.launch {
-            try {
-                val results = processImageBatch(
-                    context = context,
-                    inputUris = files,
-                    outputFolderUri = folder,
-                    quality = quality,
-                    onProgress = { progress ->
-                        currentProgress = progress
-                    },
-                    onFileProcessed = { result ->
-                        batchResults = batchResults + result
-                    }
-                )
-
-                status = formatBatchSummary(results)
-                batchResults = results
-            } catch (error: CancellationException) {
-                status = if (batchResults.isNotEmpty()) {
-                    "Batch cancelled. ${batchResults.size} files processed."
-                } else {
-                    "Batch cancelled before processing started."
-                }
-            } catch (error: Exception) {
-                val failureResult = BatchFileResult(
-                    inputUri = Uri.EMPTY,
-                    inputName = "Batch failed",
-                    outputUri = null,
-                    decision = ProcessingDecision.Failed,
-                    inputBytes = 0L,
-                    outputBytes = 0L,
-                    message = error.message ?: "Unknown error"
-                )
-                val updatedResults = batchResults + failureResult
-                batchResults = updatedResults
-                status = error.message ?: "Batch failed"
-            } finally {
-                currentProgress = currentProgress.copy(
-                    total = files.size,
-                    completed = batchResults.size.coerceAtMost(files.size),
-                    currentFile = null
-                )
-                isProcessing = false
-                processingJob = null
-                currentScreen = if (batchResults.isNotEmpty()) SlicerScreen.Results else SlicerScreen.Setup
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        startPersistedBatch(files, folder, quality)
     }
 
     if (currentScreen == SlicerScreen.Welcome) {
@@ -414,8 +389,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             onRemoveImage = { uri ->
                                 selectedImages = selectedImages - uri
                                 selectedResultForComparison = null
-                                batchResults = emptyList()
-                                currentProgress = ProcessingProgress(total = selectedImages.size)
                                 status = null
                             },
                             modifier = Modifier
@@ -591,12 +564,15 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             .fillMaxWidth()
                             .fillMaxHeight()
                     ) {
-                        ProcessingPanel(
-                            progress = currentProgress,
+                        Column(
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .padding(bottom = 76.dp)
-                        )
+                                .padding(bottom = 76.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            ProcessingPanel(progress = currentProgress)
+                            durableState.status?.let { NoticeText(message = it) }
+                        }
 
                         Surface(
                             modifier = Modifier
@@ -605,17 +581,41 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 .navigationBarsPadding(),
                             color = MaterialTheme.colorScheme.background
                         ) {
-                            OutlinedButton(
-                                onClick = {
-                                    processingJob?.cancel()
-                                    status = "Cancelling batch..."
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = MaterialTheme.shapes.small
-                            ) {
-                                Text("Cancel")
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (durableState.needsDestination) {
+                                    Button(
+                                        onClick = { folderPicker.launch(null) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(52.dp),
+                                        shape = MaterialTheme.shapes.small
+                                    ) {
+                                        Text("Choose new output folder")
+                                    }
+                                }
+                                if (durableState.canResume) {
+                                    Button(
+                                        onClick = { homeViewModel.resumeBatch() },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(52.dp),
+                                        shape = MaterialTheme.shapes.small
+                                    ) {
+                                        Text("Resume processing")
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        homeViewModel.cancelBatch()
+                                        status = "Cancelling after the current image..."
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp),
+                                    shape = MaterialTheme.shapes.small
+                                ) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
@@ -634,17 +634,23 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 .fillMaxHeight()
                                 .padding(bottom = 72.dp)
                         ) {
+                            durableState.status?.let { NoticeText(message = it) }
                             if (batchResults.isNotEmpty()) {
                                 BatchResultsPanel(
                                     results = batchResults,
                                     onResultClick = { result ->
-                                        if (result.decision != ProcessingDecision.Failed && result.outputUri != null) {
+                                        if (result.decision != ProcessingDecision.Failed &&
+                                            result.decision != ProcessingDecision.Cancelled && result.outputUri != null
+                                        ) {
                                             selectedResultForComparison = result
                                             comparePosition = 0.5f
                                             currentScreen = SlicerScreen.Compare
                                         }
                                     },
                                     isResultListScrollable = true,
+                                    persistedInputBytes = durableState.totalInputBytes,
+                                    persistedOutputBytes = durableState.totalOutputBytes,
+                                    persistedSavedBytes = durableState.totalSavedBytes,
                                     modifier = Modifier.weight(1f)
                                 )
                             } else {
@@ -655,8 +661,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                         Button(
                             onClick = {
                                 selectedImages = emptyList()
-                                batchResults = emptyList()
-                                currentProgress = ProcessingProgress()
+                                homeViewModel.dismissCurrentBatch()
                                 currentScreen = SlicerScreen.Setup
                             },
                             enabled = true,
