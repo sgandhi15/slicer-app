@@ -300,9 +300,15 @@ private suspend fun Context.copyPreparedFile(source: File, destinationUri: Uri):
                     currentCoroutineContext().ensureActive()
                     val bytesRead = input.read(buffer)
                     if (bytesRead < 0) break
-                    if (bytesRead == 0) continue
-                    output.write(buffer, 0, bytesRead)
-                    copiedBytes += bytesRead
+                    if (bytesRead == 0) {
+                        val nextByte = input.read()
+                        if (nextByte < 0) break
+                        output.write(nextByte)
+                        copiedBytes++
+                    } else {
+                        output.write(buffer, 0, bytesRead)
+                        copiedBytes += bytesRead
+                    }
                 }
                 output.flush()
                 copiedBytes

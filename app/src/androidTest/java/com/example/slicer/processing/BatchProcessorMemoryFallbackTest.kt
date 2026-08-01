@@ -51,6 +51,31 @@ class BatchProcessorMemoryFallbackTest {
         }
     }
 
+    @Test
+    fun truncatedOriginalCannotPassFinalPreparedOutputValidation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = File.createTempFile("truncated-source-", ".jpg", context.cacheDir)
+        val output = File.createTempFile("truncated-output-", ".jpg", context.cacheDir)
+        source.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE1.toByte(), 0x00, 0x10))
+
+        try {
+            val failure = runCatching {
+                processBatchItem(
+                    context = context,
+                    inputUri = source.toUri(),
+                    tempFile = output,
+                    quality = 80,
+                    inputBytes = source.length()
+                )
+            }.exceptionOrNull()
+
+            assertTrue(failure is InvalidJpegDataException)
+        } finally {
+            source.delete()
+            output.delete()
+        }
+    }
+
     private fun jpegWithDimensions(width: Int, height: Int): ByteArray {
         val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
         val output = ByteArrayOutputStream()

@@ -437,6 +437,16 @@ The selected policy keeps external source URIs rather than staging complete inpu
 - Add structural and dimension validation.
 - Keep expensive visual validation only for exceptional output.
 
+Phase 5 is complete when:
+
+- Source dimensions are read from a cancellation-aware, bounded JPEG header scan and checked again against the decoded bitmap before encoding.
+- Every native attempt must contain a complete, dimension-matching JPEG structure, including valid progressive scans, entropy stuffing, restart markers, and a final EOI marker.
+- Normal first-attempt MozJPEG output is accepted without another bitmap decode; alternate attempts or an unexpected encoder profile retain one expensive visual safeguard.
+- JFIF density, EXIF, ordered RGB ICC, IPTC/Photoshop, and comments are copied segment-by-segment without complete source, encoded, or merged JPEG byte arrays; linked or unknown APP payloads are omitted rather than retaining stale offsets.
+- Source Adobe APP14 data is not transplanted onto newly encoded color data; an encoder-owned APP14 segment is retained.
+- Metadata is written to a size-limited app-private sidecar, flushed, structurally validated, and atomically moved over the encoded temporary file so cancellation or failure cannot partially rewrite the canonical output.
+- Both compressed output and original-file fallback pass complete structural validation before publication; malformed or truncated originals are failed rather than copied to a user-visible destination.
+
 ### Phase 6: Measurement And Tuning
 
 - Build large-batch integration tests and benchmarks.

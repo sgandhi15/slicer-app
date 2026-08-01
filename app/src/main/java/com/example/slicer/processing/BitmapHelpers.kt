@@ -5,33 +5,11 @@ import android.graphics.BitmapFactory
 import androidx.core.graphics.get
 import java.io.File
 
-internal fun ByteArray.isLikelyUsableJpeg(expectedWidth: Int, expectedHeight: Int, sourceBitmap: Bitmap): Boolean {
-    if (isEmpty()) {
-        return false
-    }
-
-    return runCatching {
-        val decoded = BitmapFactory.decodeByteArray(this, 0, size)
-            ?: return false
-
-        if (decoded.width != expectedWidth || decoded.height != expectedHeight) {
-            decoded.recycle()
-            return false
-        }
-
-        val sourceSpread = sourceBitmap.sampleLumaRange()
-        val decodedSpread = decoded.sampleLumaRange()
-        decoded.recycle()
-
-        if (sourceSpread <= 4) {
-            true
-        } else {
-            decodedSpread >= 8 || decodedSpread >= sourceSpread / 4
-        }
-    }.getOrDefault(false)
-}
-
-internal fun File.isLikelyUsableJpeg(expectedWidth: Int, expectedHeight: Int, sourceBitmap: Bitmap): Boolean {
+internal fun File.isVisuallyConsistentJpeg(
+    expectedWidth: Int,
+    expectedHeight: Int,
+    sourceBitmap: Bitmap
+): Boolean {
     if (!isFile || length() <= 0L) {
         return false
     }

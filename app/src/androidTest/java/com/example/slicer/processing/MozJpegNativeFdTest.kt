@@ -7,7 +7,7 @@ import android.graphics.Color
 import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
+import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -32,13 +32,17 @@ class MozJpegNativeFdTest {
                         bitmap = bitmap,
                         outputFileDescriptor = descriptor.fd,
                         quality = 95,
-                        subsampling = MOZJPEG_SUBSAMPLING_444
+                        subsampling = MOZJPEG_SUBSAMPLING_420
                     )
                 )
                 assertTrue(descriptor.fileDescriptor.valid())
             }
 
             assertJpegMarkers(output)
+            val structure = output.inspectCompleteJpeg(JpegDimensions(bitmap.width, bitmap.height))
+                as JpegInspectionResult.Valid
+            assertEquals(JPEG_PROGRESSIVE_FRAME_MARKER, structure.structure.frameMarker)
+            assertTrue(structure.structure.scanCount > 1)
             val decoded = requireNotNull(BitmapFactory.decodeFile(output.absolutePath))
             try {
                 assertEquals(bitmap.width, decoded.width)
