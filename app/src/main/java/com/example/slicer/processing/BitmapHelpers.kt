@@ -3,6 +3,7 @@ package com.example.slicer.processing
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.core.graphics.get
+import java.io.File
 
 internal fun ByteArray.isLikelyUsableJpeg(expectedWidth: Int, expectedHeight: Int, sourceBitmap: Bitmap): Boolean {
     if (isEmpty()) {
@@ -28,6 +29,39 @@ internal fun ByteArray.isLikelyUsableJpeg(expectedWidth: Int, expectedHeight: In
             decodedSpread >= 8 || decodedSpread >= sourceSpread / 4
         }
     }.getOrDefault(false)
+}
+
+internal fun File.isLikelyUsableJpeg(expectedWidth: Int, expectedHeight: Int, sourceBitmap: Bitmap): Boolean {
+    if (!isFile || length() <= 0L) {
+        return false
+    }
+
+    return validateDecodedJpeg(
+        decoded = runCatching { BitmapFactory.decodeFile(absolutePath) }.getOrNull(),
+        expectedWidth = expectedWidth,
+        expectedHeight = expectedHeight,
+        sourceBitmap = sourceBitmap
+    )
+}
+
+private fun validateDecodedJpeg(
+    decoded: Bitmap?,
+    expectedWidth: Int,
+    expectedHeight: Int,
+    sourceBitmap: Bitmap
+): Boolean {
+    decoded ?: return false
+    return try {
+        if (decoded.width != expectedWidth || decoded.height != expectedHeight) {
+            return false
+        }
+
+        val sourceSpread = sourceBitmap.sampleLumaRange()
+        val decodedSpread = decoded.sampleLumaRange()
+        sourceSpread <= 4 || decodedSpread >= 8 || decodedSpread >= sourceSpread / 4
+    } finally {
+        decoded.recycle()
+    }
 }
 
 internal fun Bitmap.sampleLumaRange(): Int {

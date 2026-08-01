@@ -11,7 +11,7 @@ set(MOZJPEG_VERSION "v4.1.5")
 set(MOZJPEG_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-src")
 set(MOZJPEG_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-build")
 set(MOZJPEG_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-install")
-set(MOZJPEG_LIBRARY_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}turbojpeg${CMAKE_STATIC_LIBRARY_SUFFIX}")
+set(MOZJPEG_LIBRARY_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}jpeg${CMAKE_STATIC_LIBRARY_SUFFIX}")
 set(MOZJPEG_LIBRARY "${MOZJPEG_INSTALL_DIR}/lib/${MOZJPEG_LIBRARY_NAME}")
 set(MOZJPEG_INCLUDE_DIR "${MOZJPEG_INSTALL_DIR}/include")
 
@@ -86,7 +86,9 @@ target_link_libraries(
     slicer_mozjpeg
     PRIVATE
     mozjpeg_native
+    jnigraphics
     log
+    m
 )
 
 target_compile_definitions(

@@ -74,6 +74,7 @@ internal data class ProcessingProgress(
 )
 
 internal data class BatchFileResult(
+    val id: String,
     val inputUri: Uri,
     val inputName: String,
     val outputUri: Uri?,

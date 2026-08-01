@@ -3,6 +3,7 @@ package com.example.slicer.home
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.core.net.toUri
 import com.example.slicer.SlicerApplication
@@ -13,16 +14,59 @@ import com.example.slicer.batch.BatchState
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
+import com.example.slicer.storage.ContentResolverImageSelectionValidator
+import com.example.slicer.storage.ImageSelectionOutcome
+import com.example.slicer.storage.ImageSelectionValidator
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+
+internal data class ImageSelectionUiState(
+    val selectedImages: List<Uri> = emptyList(),
+    val isValidating: Boolean = false,
+    val validatedCount: Int = 0,
+    val totalCount: Int = 0,
+    val unsupportedUris: List<Uri> = emptyList(),
+    val inaccessibleUris: List<Uri> = emptyList(),
+    internal val requestId: Long = 0L
+) {
+    val notice: String?
+        get() {
+            if (isValidating || totalCount == 0) return null
+            val rejectedCount = unsupportedUris.size + inaccessibleUris.size
+            if (rejectedCount == 0) return null
+
+            val reasons = buildList {
+                if (unsupportedUris.isNotEmpty()) add("${unsupportedUris.size} unsupported")
+                if (inaccessibleUris.isNotEmpty()) add("${inaccessibleUris.size} inaccessible")
+            }.joinToString(" and ")
+            return if (selectedImages.isEmpty()) {
+                "No supported files selected. Skipped $reasons."
+            } else {
+                "${selectedImages.size} files selected. Skipped $reasons."
+            }
+        }
+}
 
 internal data class DurableBatchUiState(
     val batchId: String? = null,
@@ -50,11 +94,29 @@ internal data class DurableBatchUiState(
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
-internal class HomeViewModel(application: Application) : AndroidViewModel(application) {
+internal class HomeViewModel internal constructor(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle,
+    private val imageSelectionValidator: ImageSelectionValidator,
+    private val validationDispatcher: CoroutineDispatcher
+) : AndroidViewModel(application) {
+    constructor(application: Application, savedStateHandle: SavedStateHandle) : this(
+        application = application,
+        savedStateHandle = savedStateHandle,
+        imageSelectionValidator = ContentResolverImageSelectionValidator(application),
+        validationDispatcher = Dispatchers.IO.limitedParallelism(MAX_SELECTION_VALIDATION_CONCURRENCY)
+    )
+
     private val repository = (application as SlicerApplication).batchRepository
     private val dismissedBatchId = MutableStateFlow<String?>(null)
     private val isStarting = MutableStateFlow(false)
     private val startError = MutableStateFlow<String?>(null)
+    private val selectionRequestIds = AtomicLong(0L)
+    private var selectionValidationJob: Job? = null
+    private val _selectionState = MutableStateFlow(
+        ImageSelectionUiState(selectedImages = restoreSelectedImages())
+    )
+    val selectionState: StateFlow<ImageSelectionUiState> = _selectionState.asStateFlow()
     @Volatile
     private var startingCancellationRequested = false
 
@@ -80,6 +142,85 @@ internal class HomeViewModel(application: Application) : AndroidViewModel(applic
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = DurableBatchUiState()
     )
+
+    fun validateImageSelection(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+
+        val distinctUris = uris.distinct()
+        val requestId = selectionRequestIds.incrementAndGet()
+        selectionValidationJob?.cancel()
+        saveSelectedImages(emptyList())
+        _selectionState.value = ImageSelectionUiState(
+            isValidating = true,
+            totalCount = distinctUris.size,
+            requestId = requestId
+        )
+
+        selectionValidationJob = viewModelScope.launch {
+            val completedCount = AtomicInteger(0)
+            val outcomes = supervisorScope {
+                distinctUris.map { uri ->
+                    async(validationDispatcher) {
+                        val outcome = try {
+                            imageSelectionValidator.validate(uri)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            ImageSelectionOutcome.Inaccessible
+                        }
+                        currentCoroutineContext().ensureActive()
+                        val completed = completedCount.incrementAndGet()
+                        _selectionState.update { state ->
+                            if (state.requestId != requestId) {
+                                state
+                            } else {
+                                state.copy(validatedCount = maxOf(state.validatedCount, completed))
+                            }
+                        }
+                        uri to outcome
+                    }
+                }.awaitAll()
+            }
+
+            val selectedImages = outcomes.mapNotNull { (uri, outcome) ->
+                uri.takeIf { outcome == ImageSelectionOutcome.Supported }
+            }
+            val unsupportedUris = outcomes.mapNotNull { (uri, outcome) ->
+                uri.takeIf { outcome == ImageSelectionOutcome.Unsupported }
+            }
+            val inaccessibleUris = outcomes.mapNotNull { (uri, outcome) ->
+                uri.takeIf { outcome == ImageSelectionOutcome.Inaccessible }
+            }
+            _selectionState.update { state ->
+                if (state.requestId != requestId) {
+                    state
+                } else {
+                    state.copy(
+                        selectedImages = selectedImages,
+                        isValidating = false,
+                        validatedCount = distinctUris.size,
+                        unsupportedUris = unsupportedUris,
+                        inaccessibleUris = inaccessibleUris
+                    )
+                }
+            }
+            if (_selectionState.value.requestId == requestId) saveSelectedImages(selectedImages)
+        }
+    }
+
+    fun removeSelectedImage(uri: Uri) {
+        _selectionState.update { state ->
+            state.copy(selectedImages = state.selectedImages - uri)
+        }
+        saveSelectedImages(_selectionState.value.selectedImages)
+    }
+
+    fun clearImageSelection() {
+        val requestId = selectionRequestIds.incrementAndGet()
+        selectionValidationJob?.cancel()
+        _selectionState.value = ImageSelectionUiState(requestId = requestId)
+        saveSelectedImages(emptyList())
+    }
 
     fun startBatch(sourceUris: List<Uri>, destinationUri: Uri, quality: Int) {
         if (isStarting.value) return
@@ -142,6 +283,21 @@ internal class HomeViewModel(application: Application) : AndroidViewModel(applic
     fun clearError() {
         startError.value = null
     }
+
+    private fun restoreSelectedImages(): List<Uri> {
+        return savedStateHandle.get<ArrayList<String>>(SELECTED_IMAGES_KEY)
+            ?.map(Uri::parse)
+            .orEmpty()
+    }
+
+    private fun saveSelectedImages(images: List<Uri>) {
+        savedStateHandle[SELECTED_IMAGES_KEY] = ArrayList(images.map(Uri::toString))
+    }
+
+    private companion object {
+        const val MAX_SELECTION_VALIDATION_CONCURRENCY = 4
+        const val SELECTED_IMAGES_KEY = "selected_images"
+    }
 }
 
 private fun BatchEntity?.toUiState(
@@ -191,6 +347,7 @@ private fun BatchEntity?.toUiState(
 }
 
 private fun BatchItemEntity.toResult(): BatchFileResult = BatchFileResult(
+    id = id,
     inputUri = sourceUri.toUri(),
     inputName = inputName
         ?: sourceUri.toUri().lastPathSegment?.substringAfterLast('/')?.ifBlank { null }

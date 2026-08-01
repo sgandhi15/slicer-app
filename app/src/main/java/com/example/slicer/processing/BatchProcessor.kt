@@ -31,7 +31,7 @@ internal suspend fun processBatchItem(
     val result = processSingleImage(
         context = context,
         inputUri = inputUri,
-        outputUri = tempFile.toUri(),
+        outputFile = tempFile,
         quality = quality,
         inputBytes = inputBytes
     )
@@ -45,14 +45,15 @@ internal suspend fun processBatchItem(
 private suspend fun processSingleImage(
     context: Context,
     inputUri: Uri,
-    outputUri: Uri,
+    outputFile: File,
     quality: Int,
     inputBytes: Long
 ): PreparedBatchOutput {
+    val outputUri = outputFile.toUri()
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
     val compressionResult = try {
-        context.compressJpegImage(inputUri, outputUri, q)
+        context.compressJpegImage(inputUri, outputFile, q)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Exception) {

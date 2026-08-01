@@ -82,6 +82,14 @@ internal class BatchWorker(
                     }
                     Result.failure()
                 }
+            } finally {
+                withContext(NonCancellable) {
+                    try {
+                        repository.reconcileSourcePermissions()
+                    } catch (error: Exception) {
+                        Log.w(LOG_TAG, "Could not reconcile source permissions after worker execution.", error)
+                    }
+                }
             }
         }
     }
@@ -106,8 +114,10 @@ internal class BatchWorker(
             markCleanupBlocked(batchId)
             throw CleanupBlockedException()
         }
+        repository.reconcileRequiredSourcePermissions()
 
         batch = dao.getBatch(batchId) ?: return
+        if (!batch.state.isActive) return
         if (batch.cancellationRequested) {
             dao.requestCancellation(batchId)
             dao.finishBatch(batchId)
@@ -178,6 +188,7 @@ internal class BatchWorker(
                 ) {
                     "Could not persist the published output result."
                 }
+                repository.releaseSourcePermissionIfUnused(item.sourceUri.toUri())
                 if (!applicationContext.deleteOutputTempFile(item.id)) {
                     Log.w(LOG_TAG, "Could not remove temporary output for item ${item.id}.")
                 }
@@ -223,6 +234,7 @@ internal class BatchWorker(
                 maxAttempts = MAX_ITEM_ATTEMPTS,
                 message = "$message The image could not be processed after $MAX_ITEM_ATTEMPTS attempts."
             )
+            repository.releaseSourcePermissionIfUnused(current.sourceUri.toUri())
             if (dao.getItem(current.id)?.state == BatchItemState.Queued) {
                 if (dao.markForWorkerRetry(current.batchId, message)) {
                     repository.scheduleItemRetry(current.batchId, current.attemptCount)
@@ -241,6 +253,7 @@ internal class BatchWorker(
             outputBytes = -1L,
             message = message
         )
+        repository.releaseSourcePermissionIfUnused(current.sourceUri.toUri())
     }
 
     private suspend fun cleanupInterruptedBatch(batchId: String): Set<String> {

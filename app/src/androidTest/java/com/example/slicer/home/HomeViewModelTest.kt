@@ -1,5 +1,7 @@
 package com.example.slicer.home
 
+import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.slicer.SlicerApplication
@@ -7,11 +9,17 @@ import com.example.slicer.batch.BatchEntity
 import com.example.slicer.batch.BatchItemEntity
 import com.example.slicer.batch.BatchItemState
 import com.example.slicer.batch.BatchState
+import com.example.slicer.storage.ImageSelectionOutcome
+import com.example.slicer.storage.ImageSelectionValidator
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -55,7 +63,7 @@ class HomeViewModelTest {
                 )
             )
         )
-        val viewModel = HomeViewModel(application)
+        val viewModel = HomeViewModel(application, SavedStateHandle())
 
         withTimeout(5_000) { viewModel.uiState.first { it.batchId == BATCH_ID } }
         viewModel.dismissCurrentBatch()
@@ -96,7 +104,7 @@ class HomeViewModelTest {
                 )
             )
         )
-        val viewModel = HomeViewModel(application)
+        val viewModel = HomeViewModel(application, SavedStateHandle())
         val observedIds = CopyOnWriteArrayList<String?>()
         val collection = launch { viewModel.uiState.collect { state -> observedIds += state.batchId } }
 
@@ -120,6 +128,70 @@ class HomeViewModelTest {
         } finally {
             collection.cancelAndJoin()
         }
+    }
+
+    @Test
+    fun imageSelectionReportsSupportedUnsupportedAndInaccessibleFiles() = runBlocking {
+        val supported = Uri.parse("content://selection/supported.jpg")
+        val unsupported = Uri.parse("content://selection/unsupported.png")
+        val inaccessible = Uri.parse("content://selection/inaccessible.jpg")
+        val validator = ImageSelectionValidator { uri ->
+            when (uri) {
+                supported -> ImageSelectionOutcome.Supported
+                unsupported -> ImageSelectionOutcome.Unsupported
+                else -> ImageSelectionOutcome.Inaccessible
+            }
+        }
+        val viewModel = HomeViewModel(
+            application,
+            SavedStateHandle(),
+            validator,
+            Dispatchers.Default
+        )
+
+        viewModel.validateImageSelection(listOf(supported, unsupported, inaccessible, supported))
+
+        val selection = withTimeout(5_000) {
+            viewModel.selectionState.first { state -> !state.isValidating && state.totalCount == 3 }
+        }
+        assertEquals(listOf(supported), selection.selectedImages)
+        assertEquals(listOf(unsupported), selection.unsupportedUris)
+        assertEquals(listOf(inaccessible), selection.inaccessibleUris)
+        assertEquals(3, selection.validatedCount)
+    }
+
+    @Test
+    fun lateValidationCannotReplaceANewerSelection() = runBlocking {
+        val first = Uri.parse("content://selection/first.jpg")
+        val second = Uri.parse("content://selection/second.jpg")
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val validator = ImageSelectionValidator { uri ->
+            if (uri == first) {
+                firstStarted.complete(Unit)
+                withContext(NonCancellable) { releaseFirst.await() }
+            }
+            ImageSelectionOutcome.Supported
+        }
+        val viewModel = HomeViewModel(
+            application,
+            SavedStateHandle(),
+            validator,
+            Dispatchers.Default
+        )
+
+        viewModel.validateImageSelection(listOf(first))
+        withTimeout(5_000) { firstStarted.await() }
+        viewModel.validateImageSelection(listOf(second))
+        withTimeout(5_000) {
+            viewModel.selectionState.first { state ->
+                !state.isValidating && state.selectedImages == listOf(second)
+            }
+        }
+        releaseFirst.complete(Unit)
+        delay(100)
+
+        assertEquals(listOf(second), viewModel.selectionState.value.selectedImages)
     }
 
     private companion object {

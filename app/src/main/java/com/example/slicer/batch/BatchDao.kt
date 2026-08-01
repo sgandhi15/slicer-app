@@ -38,6 +38,22 @@ internal abstract class BatchDao {
     @Query("SELECT * FROM batch_items WHERE id = :itemId")
     abstract suspend fun getItem(itemId: String): BatchItemEntity?
 
+    @Query("SELECT * FROM batch_items WHERE state IN ('Queued', 'Processing')")
+    abstract suspend fun getItemsRequiringSourcePermission(): List<BatchItemEntity>
+
+    @Query("SELECT DISTINCT sourceUri FROM batch_items WHERE state IN ('Queued', 'Processing')")
+    abstract suspend fun getRequiredSourceUris(): List<String>
+
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM batch_items
+            WHERE sourceUri = :sourceUri AND state IN ('Queued', 'Processing')
+        )
+        """
+    )
+    abstract suspend fun hasNonTerminalSourceReference(sourceUri: String): Boolean
+
     @Query(
         """
         SELECT id FROM batches
@@ -240,6 +256,30 @@ internal abstract class BatchDao {
 
     @Query(
         """
+        UPDATE batches SET
+            completedCount = completedCount + :completedDelta,
+            compressedCount = compressedCount + :compressedDelta,
+            copiedCount = copiedCount + :copiedDelta,
+            failedCount = failedCount + :failedDelta,
+            cancelledCount = cancelledCount + :cancelledDelta,
+            totalOutputBytes = totalOutputBytes + :outputBytesDelta,
+            totalSavedBytes = totalSavedBytes + :savedBytesDelta
+        WHERE id = :batchId
+        """
+    )
+    protected abstract suspend fun addSummaryDelta(
+        batchId: String,
+        completedDelta: Int = 0,
+        compressedDelta: Int = 0,
+        copiedDelta: Int = 0,
+        failedDelta: Int = 0,
+        cancelledDelta: Int = 0,
+        outputBytesDelta: Long = 0L,
+        savedBytesDelta: Long = 0L
+    )
+
+    @Query(
+        """
         UPDATE batches SET state = :runningState, lastError = NULL
         WHERE id = :batchId AND state IN (:queuedState, :retryingState)
         """
@@ -397,8 +437,11 @@ internal abstract class BatchDao {
         message: String?
     ): Boolean {
         require(state.isTerminal)
+        val item = getItem(itemId)
+            ?.takeIf { item -> item.batchId == batchId && item.state == BatchItemState.Processing }
+            ?: return false
         val changed = markTerminal(itemId, state, outputUri, actualOutputName, outputBytes, message) == 1
-        if (changed) refreshSummary(batchId)
+        if (changed) addTerminalSummary(batchId, item, state, outputBytes)
         return changed
     }
 
@@ -428,7 +471,7 @@ internal abstract class BatchDao {
                 message = "Cancelled by user."
             ) == 1
             if (changed) {
-                refreshSummary(batchId)
+                addTerminalSummary(batchId, item, BatchItemState.Cancelled, -1L)
                 if (getProcessingItems(batchId).isEmpty()) {
                     markBatchTerminal(batchId, BatchState.Cancelled, System.currentTimeMillis(), null)
                 }
@@ -438,7 +481,7 @@ internal abstract class BatchDao {
         val changed = if (item.attemptCount < maxAttempts) {
             requeueInterruptedItem(item.id) == 1
         } else {
-            markTerminal(
+            val terminal = markTerminal(
                 itemId = item.id,
                 state = BatchItemState.Failed,
                 outputUri = null,
@@ -446,8 +489,9 @@ internal abstract class BatchDao {
                 outputBytes = -1L,
                 message = message
             ) == 1
+            if (terminal) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
+            terminal
         }
-        if (changed) refreshSummary(batchId)
         return changed
     }
 
@@ -461,28 +505,33 @@ internal abstract class BatchDao {
         val interrupted = getProcessingItems(batchId).filterNot { item -> item.id in blockedItemIds }
         interrupted.forEach { item ->
             when {
-                batch.cancellationRequested -> markTerminal(
-                    itemId = item.id,
-                    state = BatchItemState.Cancelled,
-                    outputUri = null,
-                    actualOutputName = null,
-                    outputBytes = -1L,
-                    message = "Cancelled by user."
-                )
+                batch.cancellationRequested -> {
+                    val changed = markTerminal(
+                        itemId = item.id,
+                        state = BatchItemState.Cancelled,
+                        outputUri = null,
+                        actualOutputName = null,
+                        outputBytes = -1L,
+                        message = "Cancelled by user."
+                    ) == 1
+                    if (changed) addTerminalSummary(batchId, item, BatchItemState.Cancelled, -1L)
+                }
 
                 item.attemptCount < maxAttempts -> requeueInterruptedItem(item.id)
 
-                else -> markTerminal(
-                    itemId = item.id,
-                    state = BatchItemState.Failed,
-                    outputUri = null,
-                    actualOutputName = null,
-                    outputBytes = -1L,
-                    message = "Processing was interrupted repeatedly."
-                )
+                else -> {
+                    val changed = markTerminal(
+                        itemId = item.id,
+                        state = BatchItemState.Failed,
+                        outputUri = null,
+                        actualOutputName = null,
+                        outputBytes = -1L,
+                        message = "Processing was interrupted repeatedly."
+                    ) == 1
+                    if (changed) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
+                }
             }
         }
-        if (interrupted.isNotEmpty()) refreshSummary(batchId)
         return interrupted.size
     }
 
@@ -493,8 +542,14 @@ internal abstract class BatchDao {
     @Transaction
     open suspend fun requestCancellation(batchId: String): Boolean {
         if (markCancellationRequested(batchId) == 0) return false
-        cancelQueuedItems(batchId, "Cancelled by user.")
-        refreshSummary(batchId)
+        val cancelledCount = cancelQueuedItems(batchId, "Cancelled by user.")
+        if (cancelledCount > 0) {
+            addSummaryDelta(
+                batchId = batchId,
+                completedDelta = cancelledCount,
+                cancelledDelta = cancelledCount
+            )
+        }
         if (getProcessingItems(batchId).isEmpty()) {
             markBatchTerminal(batchId, BatchState.Cancelled, System.currentTimeMillis(), null)
         }
@@ -517,38 +572,78 @@ internal abstract class BatchDao {
     @Transaction
     open suspend fun failBatch(batchId: String, error: String) {
         val batch = getBatch(batchId) ?: return
-        if (!batch.state.isActive) return
+        if (batch.state.isTerminal) return
 
         if (batch.cancellationRequested) {
             getProcessingItems(batchId).forEach { item ->
-                markTerminal(
+                val changed = markTerminal(
                     itemId = item.id,
                     state = BatchItemState.Cancelled,
                     outputUri = null,
                     actualOutputName = null,
                     outputBytes = -1L,
                     message = "Cancelled by user."
+                ) == 1
+                if (changed) addTerminalSummary(batchId, item, BatchItemState.Cancelled, -1L)
+            }
+            val cancelledCount = cancelQueuedItems(batchId, "Cancelled by user.")
+            if (cancelledCount > 0) {
+                addSummaryDelta(
+                    batchId = batchId,
+                    completedDelta = cancelledCount,
+                    cancelledDelta = cancelledCount
                 )
             }
-            cancelQueuedItems(batchId, "Cancelled by user.")
-            refreshSummary(batchId)
             markBatchTerminal(batchId, BatchState.Cancelled, System.currentTimeMillis(), null)
             return
         }
 
         getProcessingItems(batchId).forEach { item ->
-            markTerminal(
+            val changed = markTerminal(
                 itemId = item.id,
                 state = BatchItemState.Failed,
                 outputUri = null,
                 actualOutputName = null,
                 outputBytes = -1L,
                 message = error
+            ) == 1
+            if (changed) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
+        }
+        val failedCount = failQueuedItems(batchId, "Batch stopped: $error")
+        if (failedCount > 0) {
+            addSummaryDelta(
+                batchId = batchId,
+                completedDelta = failedCount,
+                failedDelta = failedCount
             )
         }
-        failQueuedItems(batchId, "Batch stopped: $error")
-        refreshSummary(batchId)
         markBatchTerminal(batchId, BatchState.Failed, System.currentTimeMillis(), error)
+    }
+
+    private suspend fun addTerminalSummary(
+        batchId: String,
+        item: BatchItemEntity,
+        state: BatchItemState,
+        outputBytes: Long
+    ) {
+        val persistedOutputBytes = outputBytes.takeIf { bytes -> bytes > 0L } ?: 0L
+        val savedBytes = if (
+            state == BatchItemState.Compressed || state == BatchItemState.CopiedOriginal
+        ) {
+            (item.inputBytes - outputBytes).takeIf { saved -> outputBytes >= 0L && saved > 0L } ?: 0L
+        } else {
+            0L
+        }
+        addSummaryDelta(
+            batchId = batchId,
+            completedDelta = 1,
+            compressedDelta = if (state == BatchItemState.Compressed) 1 else 0,
+            copiedDelta = if (state == BatchItemState.CopiedOriginal) 1 else 0,
+            failedDelta = if (state == BatchItemState.Failed) 1 else 0,
+            cancelledDelta = if (state == BatchItemState.Cancelled) 1 else 0,
+            outputBytesDelta = persistedOutputBytes,
+            savedBytesDelta = savedBytes
+        )
     }
 
     private suspend fun refreshSummary(batchId: String) {

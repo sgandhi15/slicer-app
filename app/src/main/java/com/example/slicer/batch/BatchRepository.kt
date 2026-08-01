@@ -1,28 +1,34 @@
 package com.example.slicer.batch
 
 import android.content.Context
-import android.content.Intent
+import android.content.ContentResolver
 import android.net.Uri
-import androidx.work.ExistingWorkPolicy
+import android.provider.DocumentsContract
+import android.util.Log
 import androidx.work.BackoffPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkRequest
 import androidx.work.WorkManager
 import androidx.work.await
 import androidx.work.workDataOf
+import com.example.slicer.core.LOG_TAG
+import com.example.slicer.storage.AndroidSourceUriPermissionStore
+import com.example.slicer.storage.OutputFolderAccess
+import com.example.slicer.storage.SourceUriPermissionStore
 import com.example.slicer.storage.cleanupAbandonedOutputTemps
 import com.example.slicer.storage.cleanupOrphanedPendingMediaStoreOutputs
 import com.example.slicer.storage.cleanupUntrackedSafOutput
 import com.example.slicer.storage.deleteOutputDocument
 import com.example.slicer.storage.isDefaultOutputFolder
-import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.outputFolderAccess
-import android.util.Log
-import com.example.slicer.core.LOG_TAG
-import kotlinx.coroutines.Dispatchers
+import com.example.slicer.storage.withOutputLifecycleLock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -34,8 +40,11 @@ internal data class BatchArtifactCleanupReport(
 internal class BatchRepository(
     private val context: Context,
     private val dao: BatchDao,
-    private val workManager: WorkManager = WorkManager.getInstance(context)
+    private val workManager: WorkManager = WorkManager.getInstance(context),
+    private val sourceUriPermissions: SourceUriPermissionStore = AndroidSourceUriPermissionStore(context)
 ) {
+    private val sourceLifecycleMutex = Mutex()
+
     fun observeLatestBatch(): Flow<BatchEntity?> = dao.observeLatestBatch()
 
     fun observeItems(batchId: String): Flow<List<BatchItemEntity>> = dao.observeItems(batchId)
@@ -46,10 +55,33 @@ internal class BatchRepository(
         quality: Int,
         cancellationRequested: () -> Boolean = { false }
     ): String = withContext(Dispatchers.IO) {
+        sourceLifecycleMutex.withLock {
+            createAndEnqueueBatchLocked(sourceUris, destinationUri, quality, cancellationRequested)
+        }
+    }
+
+    private suspend fun createAndEnqueueBatchLocked(
+        sourceUris: List<Uri>,
+        destinationUri: Uri,
+        quality: Int,
+        cancellationRequested: () -> Boolean
+    ): String {
         require(sourceUris.isNotEmpty()) { "Select at least one image." }
 
-        val batchId = UUID.randomUUID().toString()
         val distinctSourceUris = sourceUris.distinct()
+        reconcileSourcePermissionsLocked(protectedUris = distinctSourceUris.toSet())
+        require(distinctSourceUris.size <= MAX_PERSISTED_SOURCES_PER_BATCH) {
+            "Select at most $MAX_PERSISTED_SOURCES_PER_BATCH images per batch."
+        }
+        val readablePersistedUris = sourceUriPermissions.persistedReadUris().toMutableSet()
+        val requiredNewGrants = distinctSourceUris.count { uri ->
+            uri.requiresPersistedReadPermission() && uri !in readablePersistedUris
+        }
+        check(sourceUriPermissions.persistedPermissionCount() + requiredNewGrants <= PERSISTED_URI_GRANT_BUDGET) {
+            "Not enough durable file-access slots are available. Finish existing work or select fewer images."
+        }
+
+        val batchId = UUID.randomUUID().toString()
         val items = distinctSourceUris.mapIndexed { index, uri ->
             BatchItemEntity(
                 id = UUID.randomUUID().toString(),
@@ -65,17 +97,15 @@ internal class BatchRepository(
             destinationUri = destinationUri.toString(),
             totalCount = items.size
         )
+        var sourceAccessReady = false
         try {
             dao.createBatch(batch, items)
             if (cancellationRequested()) {
                 dao.requestCancellation(batchId)
-                return@withContext batchId
+                reconcileSourcePermissionsLocked()
+                return batchId
             }
 
-            val readablePersistedUris = context.contentResolver.persistedUriPermissions
-                .filter { permission -> permission.isReadPermission }
-                .map { permission -> permission.uri }
-                .toMutableSet()
             val missingPermissions = distinctSourceUris.filterNot { uri ->
                 hasDurableReadPermission(uri, readablePersistedUris)
             }
@@ -84,53 +114,94 @@ internal class BatchRepository(
                     batchId,
                     "Durable access could not be saved for ${missingPermissions.size} selected file(s). Select them again."
                 )
-                return@withContext batchId
+                reconcileSourcePermissionsLocked()
+                return batchId
             }
 
+            sourceAccessReady = true
             enqueue(batchId)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
                 if (dao.getBatch(batchId) != null) {
-                    if (cancellationRequested()) {
-                        dao.requestCancellation(batchId)
-                    } else {
-                        dao.markForWorkerRetry(batchId, "Scheduling batch processing was interrupted.")
+                    when {
+                        cancellationRequested() -> dao.requestCancellation(batchId)
+                        !sourceAccessReady -> dao.failBatch(
+                            batchId,
+                            "Batch setup was interrupted before durable source access was ready."
+                        )
+                        else -> dao.markForWorkerRetry(
+                            batchId,
+                            "Scheduling batch processing was interrupted."
+                        )
                     }
+                    reconcileSourcePermissionsLocked()
                 }
             }
             throw cancelled
         } catch (error: Exception) {
             if (dao.getBatch(batchId) != null) {
-                dao.markForWorkerRetry(batchId, error.message ?: "Could not schedule batch processing.")
-                return@withContext batchId
+                if (sourceAccessReady) {
+                    dao.markForWorkerRetry(batchId, error.message ?: "Could not schedule batch processing.")
+                } else {
+                    dao.failBatch(batchId, error.message ?: "Could not secure durable source access.")
+                    reconcileSourcePermissionsLocked()
+                }
+                return batchId
             }
             throw error
         }
-        batchId
+        return batchId
     }
 
-    suspend fun resumeIncompleteBatches() {
-        dao.getActiveBatchIds().forEach { batchId ->
-            try {
-                enqueue(batchId)
-            } catch (error: Exception) {
-                dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
+    suspend fun resumeIncompleteBatches() = withOutputLifecycleLock {
+        val cleanup = cleanupAbandonedArtifacts()
+        withContext(Dispatchers.IO) {
+            sourceLifecycleMutex.withLock {
+                reconcileSourcePermissionsLocked()
+                failBatchesWithMissingSourcePermissionsLocked(cleanup.blockedProcessingItemIds)
+                reconcileSourcePermissionsLocked()
+                dao.getActiveBatchIds().forEach { batchId ->
+                    try {
+                        enqueue(batchId)
+                    } catch (error: Exception) {
+                        dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
+                    }
+                }
             }
         }
     }
 
-    suspend fun requestCancellation(batchId: String) {
-        if (dao.requestCancellation(batchId) && dao.getProcessingItems(batchId).isNotEmpty()) {
-            try {
-                enqueueCleanup(batchId)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                dao.recordActiveError(
-                    batchId,
-                    error.message ?: "Could not schedule incomplete-output cleanup."
-                )
+    suspend fun requestCancellation(batchId: String) = withContext(Dispatchers.IO) {
+        sourceLifecycleMutex.withLock {
+            val changed = dao.requestCancellation(batchId)
+            reconcileSourcePermissionsLocked()
+            if (changed && dao.getProcessingItems(batchId).isNotEmpty()) {
+                try {
+                    enqueueCleanup(batchId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    dao.recordActiveError(
+                        batchId,
+                        error.message ?: "Could not schedule incomplete-output cleanup."
+                    )
+                }
             }
+        }
+    }
+
+    suspend fun reconcileSourcePermissions() = withContext(Dispatchers.IO) {
+        sourceLifecycleMutex.withLock { reconcileSourcePermissionsLocked() }
+    }
+
+    suspend fun releaseSourcePermissionIfUnused(sourceUri: Uri) = withContext(Dispatchers.IO) {
+        sourceLifecycleMutex.withLock { releaseSourcePermissionIfUnusedLocked(sourceUri) }
+    }
+
+    suspend fun reconcileRequiredSourcePermissions() = withContext(Dispatchers.IO) {
+        sourceLifecycleMutex.withLock {
+            failBatchesWithMissingSourcePermissionsLocked()
+            reconcileSourcePermissionsLocked()
         }
     }
 
@@ -194,38 +265,82 @@ internal class BatchRepository(
         }
     }
 
-    suspend fun replaceDestinationAndResume(batchId: String, destinationUri: Uri) {
+    suspend fun replaceDestinationAndResume(batchId: String, destinationUri: Uri) = withOutputLifecycleLock {
         withContext(Dispatchers.IO) {
-            when (context.outputFolderAccess(destinationUri)) {
-                OutputFolderAccess.Writable -> Unit
-                OutputFolderAccess.PermissionMissing -> error("Output folder permission is no longer available.")
-                OutputFolderAccess.TemporarilyUnavailable -> error("Output folder provider is temporarily unavailable.")
-            }
-            check(dao.replaceDestination(batchId, destinationUri.toString()) == 1) {
-                "This batch is not waiting for a new output folder."
-            }
-            try {
-                enqueue(batchId, ExistingWorkPolicy.APPEND_OR_REPLACE)
-            } catch (error: Exception) {
-                dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
+            sourceLifecycleMutex.withLock {
+                failBatchesWithMissingSourcePermissionsLocked()
+                reconcileSourcePermissionsLocked()
+                when (context.outputFolderAccess(destinationUri)) {
+                    OutputFolderAccess.Writable -> Unit
+                    OutputFolderAccess.PermissionMissing -> error("Output folder permission is no longer available.")
+                    OutputFolderAccess.TemporarilyUnavailable -> error(
+                        "Output folder provider is temporarily unavailable."
+                    )
+                }
+                check(dao.replaceDestination(batchId, destinationUri.toString()) == 1) {
+                    dao.getBatch(batchId)?.lastError
+                        ?: "This batch is not waiting for a new output folder."
+                }
+                try {
+                    enqueue(batchId, ExistingWorkPolicy.APPEND_OR_REPLACE)
+                } catch (error: Exception) {
+                    dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
+                }
             }
         }
     }
 
     private fun hasDurableReadPermission(uri: Uri, readablePersistedUris: MutableSet<Uri>): Boolean {
+        if (!uri.requiresPersistedReadPermission()) return true
         if (uri in readablePersistedUris) return true
 
-        return runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-            val granted = context.contentResolver.persistedUriPermissions.any { permission ->
-                permission.uri == uri && permission.isReadPermission
+        val granted = sourceUriPermissions.persistReadPermission(uri)
+        if (granted) readablePersistedUris.add(uri)
+        return granted
+    }
+
+    private suspend fun failBatchesWithMissingSourcePermissionsLocked(
+        blockedProcessingItemIds: Set<String> = emptySet()
+    ) {
+        val persistedUris = sourceUriPermissions.persistedReadUris()
+        val blockedBatchIds = blockedProcessingItemIds.mapNotNullTo(mutableSetOf()) { itemId ->
+            dao.getItem(itemId)?.batchId
+        }
+        val missingByBatch = dao.getItemsRequiringSourcePermission()
+            .filter { item ->
+                val sourceUri = Uri.parse(item.sourceUri)
+                sourceUri.requiresPersistedReadPermission() && sourceUri !in persistedUris
             }
-            if (granted) readablePersistedUris.add(uri)
-            granted
-        }.getOrDefault(false)
+            .groupBy(BatchItemEntity::batchId)
+        missingByBatch.forEach { (batchId, items) ->
+            if (batchId in blockedBatchIds) return@forEach
+            dao.failBatch(
+                batchId,
+                "Durable source access is no longer available for ${items.size} file(s). Select them again."
+            )
+        }
+    }
+
+    private suspend fun reconcileSourcePermissionsLocked(protectedUris: Set<Uri> = emptySet()) {
+        val requiredUris = dao.getRequiredSourceUris().mapTo(mutableSetOf(), Uri::parse)
+        requiredUris += protectedUris
+        sourceUriPermissions.persistedReadUris()
+            .asSequence()
+            .filter { uri -> !DocumentsContract.isTreeUri(uri) && uri !in requiredUris }
+            .forEach(::releaseSourcePermissionLocked)
+    }
+
+    private suspend fun releaseSourcePermissionIfUnusedLocked(sourceUri: Uri) {
+        if (DocumentsContract.isTreeUri(sourceUri)) return
+        if (dao.hasNonTerminalSourceReference(sourceUri.toString())) return
+        if (sourceUri !in sourceUriPermissions.persistedReadUris()) return
+        releaseSourcePermissionLocked(sourceUri)
+    }
+
+    private fun releaseSourcePermissionLocked(sourceUri: Uri) {
+        if (!sourceUriPermissions.releaseReadPermission(sourceUri)) {
+            Log.w(LOG_TAG, "Could not release persisted source permission for '$sourceUri'.")
+        }
     }
 
     private suspend fun enqueue(
@@ -264,7 +379,13 @@ internal class BatchRepository(
     }
 
     private companion object {
+        const val MAX_PERSISTED_SOURCES_PER_BATCH = 400
+        const val PERSISTED_URI_GRANT_BUDGET = 480
         const val MAX_RETRY_DELAY_EXPONENT = 4
     }
 
+}
+
+private fun Uri.requiresPersistedReadPermission(): Boolean {
+    return scheme == ContentResolver.SCHEME_CONTENT
 }

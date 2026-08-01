@@ -410,6 +410,19 @@ Phase 2 is complete when:
 - Replace result `Column` rendering with `LazyColumn`.
 - Use persisted incremental summaries.
 
+Phase 3 is complete when:
+
+- The picker callback returns immediately while duplicate-free URI validation runs on bounded `Dispatchers.IO` concurrency with observable progress state.
+- Replacing a selection cancels the prior request logically, and a late provider response cannot overwrite the newer selection.
+- Unsupported and inaccessible files are reported separately after validation without blocking selection changes.
+- Source access uses a bounded persisted-URI policy: grants are acquired only after the batch and item rows exist, partial acquisition is rolled back, and a batch contains at most 400 source grants.
+- Terminal source grants and legacy unowned document grants are released idempotently, while destination tree grants and sources still referenced by queued or processing items are retained.
+- Startup and manual recovery fail unfinished rows whose source grants were lost before enqueuing work, serialized with output cleanup so they cannot race a running worker.
+- Result rows render in one `LazyColumn` keyed by persisted item IDs, while summary counts and byte totals come from the batch record rather than scans during composition.
+- Normal item transitions update persisted summary counters and byte totals by transactional deltas; full item scans are reserved for reconciliation boundaries.
+
+The selected policy keeps external source URIs rather than staging complete inputs locally. Source grants are not retained solely for comparison, so loading an original after process restart is best-effort once its item is terminal. Local staging remains a future option if batches beyond the persisted-grant policy are required.
+
 ### Phase 4: Memory-Safe Encoding
 
 - Remove full-image ARGB and RGB intermediate arrays.

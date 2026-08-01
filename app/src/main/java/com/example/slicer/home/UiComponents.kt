@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -135,116 +135,104 @@ private fun ProcessingStat(
 @Composable
 internal fun BatchResultsPanel(
     results: List<BatchFileResult>,
+    summary: ProcessingProgress,
+    totalInputBytes: Long,
+    totalOutputBytes: Long,
+    totalSavedBytes: Long,
     onResultClick: (BatchFileResult) -> Unit,
-    modifier: Modifier = Modifier,
-    isResultListScrollable: Boolean = false,
-    persistedInputBytes: Long? = null,
-    persistedOutputBytes: Long? = null,
-    persistedSavedBytes: Long? = null
+    modifier: Modifier = Modifier
 ) {
     if (results.isEmpty()) {
         NoticeText("No results yet.")
         return
     }
 
-    val compressedCount = results.count { it.decision == ProcessingDecision.Compressed }
-    val copiedCount = results.count { it.decision == ProcessingDecision.CopiedOriginal }
-    val failedCount = results.count { it.decision == ProcessingDecision.Failed }
-    val cancelledCount = results.count { it.decision == ProcessingDecision.Cancelled }
-    val successfulResults = results.filter {
-        it.decision == ProcessingDecision.Compressed || it.decision == ProcessingDecision.CopiedOriginal
-    }
-    val savedBytes = persistedSavedBytes ?: successfulResults.sumOf { result ->
-        val input = result.inputBytes
-        val output = result.outputBytes
-        if (input > 0L && output > 0L && output < input) input - output else 0L
-    }
-    val totalInputBytes = persistedInputBytes
-        ?: successfulResults.sumOf { it.inputBytes.coerceAtLeast(0L) }
-    val totalOutputBytes = persistedOutputBytes
-        ?: successfulResults.sumOf { it.outputBytes.coerceAtLeast(0L) }
-    val totalSavedPercent = if (failedCount == 0 && cancelledCount == 0) {
+    val totalSavedPercent = if (summary.failedCount == 0 && summary.cancelledCount == 0) {
         formatSavedPercentage(totalInputBytes, totalOutputBytes)
     } else {
         null
     }
 
-    Text(
-        text = "Run summary",
-        style = MaterialTheme.typography.titleLarge,
-        color = MaterialTheme.colorScheme.onSurface
-    )
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+    LazyColumn(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("slicer-result-list")
     ) {
-        Text(
-            text = "${formatByteCount(savedBytes)} saved",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+        item(key = "run-summary") {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Run summary",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
 
-        if (totalSavedPercent != null) {
-            Text(
-                text = "$totalSavedPercent smaller",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "${formatByteCount(totalSavedBytes)} saved",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    if (totalSavedPercent != null) {
+                        Text(
+                            text = "$totalSavedPercent smaller",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ProcessingStat(
+                            value = summary.compressedCount,
+                            label = "Compressed",
+                            modifier = Modifier.weight(1f)
+                        )
+                        ProcessingStat(
+                            value = summary.copiedCount,
+                            label = "Copied",
+                            modifier = Modifier.weight(1f)
+                        )
+                        ProcessingStat(
+                            value = summary.failedCount,
+                            label = "Failed",
+                            modifier = Modifier.weight(1f),
+                            isError = summary.failedCount > 0
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                Text(
+                    text = "Last run files",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+            }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(modifier = Modifier.fillMaxWidth()) {
-            ProcessingStat(
-                value = compressedCount,
-                label = "Compressed",
-                modifier = Modifier.weight(1f)
-            )
-            ProcessingStat(
-                value = copiedCount,
-                label = "Copied",
-                modifier = Modifier.weight(1f)
-            )
-            ProcessingStat(
-                value = failedCount,
-                label = "Failed",
-                modifier = Modifier.weight(1f),
-                isError = failedCount > 0
-            )
-        }
-    }
-
-    Spacer(modifier = Modifier.height(32.dp))
-
-    Text(
-        text = "Last run files",
-        style = MaterialTheme.typography.titleLarge,
-        color = MaterialTheme.colorScheme.onSurface
-    )
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    val listScrollModifier = if (isResultListScrollable) {
-        modifier.verticalScroll(rememberScrollState())
-    } else {
-        modifier
-    }
-
-    Column(
-        modifier = listScrollModifier.fillMaxWidth()
-    ) {
-        results.forEachIndexed { index, result ->
+        itemsIndexed(
+            items = results,
+            key = { _, result -> "result-${result.id}" },
+            contentType = { _, result -> result.decision }
+        ) { index, result ->
             if (index > 0) {
                 HorizontalDivider(thickness = 1.dp)
             }
             BatchResultRow(
                 result = result,
-                testTag = "slicer-result-row-${index}",
+                testTag = "slicer-result-row-${result.id}",
                 onResultClick = {
                     if (result.decision != ProcessingDecision.Failed &&
                         result.decision != ProcessingDecision.Cancelled && result.outputUri != null
@@ -254,7 +242,9 @@ internal fun BatchResultsPanel(
                 }
             )
         }
-        Spacer(modifier = Modifier.height(24.dp))
+        item(key = "result-list-bottom-space") {
+            Spacer(modifier = Modifier.height(24.dp))
+        }
     }
 }
 

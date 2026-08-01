@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,7 +51,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,6 +65,9 @@ import kotlinx.coroutines.withContext
 internal fun BatchSetupContent(
     selectedImages: List<Uri>,
     status: String?,
+    isValidating: Boolean,
+    validatedCount: Int,
+    validationTotal: Int,
     controlsEnabled: Boolean,
     onSelectImages: () -> Unit,
     onRemoveImage: (Uri) -> Unit,
@@ -78,6 +84,10 @@ internal fun BatchSetupContent(
                 onClick = onSelectImages,
                 modifier = Modifier.weight(1f)
             )
+
+            if (isValidating) {
+                SelectionValidationPanel(validatedCount, validationTotal)
+            }
 
             status?.let { message ->
                 NoticeText(message = message)
@@ -100,6 +110,18 @@ internal fun BatchSetupContent(
             )
         }
 
+        if (isValidating) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                SelectionValidationPanel(validatedCount, validationTotal)
+            }
+        }
+
+        status?.let { message ->
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                NoticeText(message = message)
+            }
+        }
+
         items(
             items = selectedImages,
             key = { it.toString() }
@@ -111,12 +133,34 @@ internal fun BatchSetupContent(
             )
         }
 
-        status?.let { message ->
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                NoticeText(message = message)
-            }
-        }
+    }
+}
 
+@Composable
+private fun SelectionValidationPanel(completed: Int, total: Int) {
+    val progress = if (total <= 0) 0f else completed.toFloat() / total.toFloat()
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
+            .testTag("image-validation-progress"),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Validating $completed of $total",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 

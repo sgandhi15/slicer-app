@@ -9,7 +9,6 @@ import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.SlicerScreen
 import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.clearOutputFolderUri
-import com.example.slicer.storage.isSupportedJpegUri
 import com.example.slicer.storage.loadBitmapForPreview
 import com.example.slicer.storage.loadSavedOutputFolderUri
 import com.example.slicer.storage.loadSavedQuality
@@ -65,7 +64,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -88,12 +86,8 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val homeViewModel: HomeViewModel = viewModel()
     val durableState by homeViewModel.uiState.collectAsStateWithLifecycle()
-    var selectedImages by rememberSaveable(
-        stateSaver = listSaver<List<Uri>, String>(
-            save = { images -> images.map(Uri::toString) },
-            restore = { saved -> saved.map(Uri::parse) }
-        )
-    ) { mutableStateOf<List<Uri>>(emptyList()) }
+    val selectionState by homeViewModel.selectionState.collectAsStateWithLifecycle()
+    val selectedImages = selectionState.selectedImages
     var outputFolder by remember { mutableStateOf(DEFAULT_OUTPUT_FOLDER_URI) }
     var quality by rememberSaveable { mutableIntStateOf(DEFAULT_QUALITY) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
@@ -178,7 +172,8 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         isCompareLoading = false
 
         compareError = when {
-            originalBitmap == null -> "Could not load original image."
+            originalBitmap == null ->
+                "Original image access is no longer available after source cleanup."
             compressedBitmap == null -> "Could not load processed image."
             result.decision == ProcessingDecision.Failed -> "No comparison available for this result."
             else -> null
@@ -248,23 +243,12 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
     val jpegPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        val supportedUris = uris.filter { uri -> context.isSupportedJpegUri(uri) }
-        val selectedUris = supportedUris.distinct()
-
-        selectedImages = selectedUris
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        status = null
+        homeViewModel.validateImageSelection(uris)
         homeViewModel.dismissCurrentBatch()
         selectedResultForComparison = null
-
         currentScreen = SlicerScreen.Setup
-
-        selectedUris.forEach { uri ->
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-        }
     }
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -313,7 +297,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         contract = ActivityResultContracts.RequestPermission()
     ) { }
 
-    val canStart = selectedImages.isNotEmpty() && !isProcessing
+    val canStart = selectedImages.isNotEmpty() && !selectionState.isValidating && !isProcessing
 
     fun startPersistedBatch(files: List<Uri>, folder: Uri, qualityValue: Int) {
         status = "Preparing batch..."
@@ -380,11 +364,14 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                     ) {
                         BatchSetupContent(
                             selectedImages = selectedImages,
-                            status = status,
+                            status = selectionState.notice ?: status,
+                            isValidating = selectionState.isValidating,
+                            validatedCount = selectionState.validatedCount,
+                            validationTotal = selectionState.totalCount,
                             controlsEnabled = !isProcessing,
                             onSelectImages = { jpegPicker.launch(JPEG_MIME_TYPES) },
                             onRemoveImage = { uri ->
-                                selectedImages = selectedImages - uri
+                                homeViewModel.removeSelectedImage(uri)
                                 selectedResultForComparison = null
                                 status = null
                             },
@@ -406,7 +393,9 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = if (selectedImages.size == 1) {
+                                    text = if (selectionState.isValidating) {
+                                        "Validating ${selectionState.validatedCount} of ${selectionState.totalCount}"
+                                    } else if (selectedImages.size == 1) {
                                         "1 file selected"
                                     } else {
                                         "${selectedImages.size} files selected"
@@ -635,6 +624,10 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             if (batchResults.isNotEmpty()) {
                                 BatchResultsPanel(
                                     results = batchResults,
+                                    summary = currentProgress,
+                                    totalInputBytes = durableState.totalInputBytes,
+                                    totalOutputBytes = durableState.totalOutputBytes,
+                                    totalSavedBytes = durableState.totalSavedBytes,
                                     onResultClick = { result ->
                                         if (result.decision != ProcessingDecision.Failed &&
                                             result.decision != ProcessingDecision.Cancelled && result.outputUri != null
@@ -644,10 +637,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                             currentScreen = SlicerScreen.Compare
                                         }
                                     },
-                                    isResultListScrollable = true,
-                                    persistedInputBytes = durableState.totalInputBytes,
-                                    persistedOutputBytes = durableState.totalOutputBytes,
-                                    persistedSavedBytes = durableState.totalSavedBytes,
                                     modifier = Modifier.weight(1f)
                                 )
                             } else {
@@ -657,7 +646,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
 
                         Button(
                             onClick = {
-                                selectedImages = emptyList()
+                                homeViewModel.clearImageSelection()
                                 homeViewModel.dismissCurrentBatch()
                                 currentScreen = SlicerScreen.Setup
                             },

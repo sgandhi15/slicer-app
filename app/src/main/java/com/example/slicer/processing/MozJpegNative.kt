@@ -1,15 +1,14 @@
 package com.example.slicer.processing
 
+import android.graphics.Bitmap
+
 private const val TJ_SAMPLING_420 = 2
 private const val TJ_SAMPLING_422 = 1
 private const val TJ_SAMPLING_444 = 0
-private const val TJ_FLAG_PROGRESSIVE = 16384
-private const val TJ_FLAG_ACCURATEDCT = 4096
-private const val TJ_FLAG_FAST_DCT = 2048
 
 private const val LIB_NAME_MOZJPEG = "slicer_mozjpeg"
 
-object MozJpegNative {
+internal object MozJpegNative {
     private val isLibraryLoaded: Boolean = runCatching {
         System.loadLibrary(LIB_NAME_MOZJPEG)
     }.isSuccess
@@ -35,17 +34,16 @@ object MozJpegNative {
     @JvmStatic
     private external fun isMozJpegEnabled(): Boolean
 
-    fun compressRgbToJpeg(
-        rgbPixels: ByteArray,
-        width: Int,
-        height: Int,
+    fun compressBitmapToJpeg(
+        bitmap: Bitmap,
+        outputFileDescriptor: Int,
         quality: Int,
         progressive: Boolean = true,
         subsampling: Int = TJ_SAMPLING_420,
         accurateDct: Boolean = true
-    ): ByteArray? {
-        if (!isAvailable) return null
-        if (rgbPixels.isEmpty() || width <= 0 || height <= 0) return null
+    ): Boolean {
+        if (!isAvailable || bitmap.isRecycled || outputFileDescriptor < 0) return false
+        if (bitmap.width <= 0 || bitmap.height <= 0) return false
 
         val safeQuality = quality.coerceIn(1, 100)
         val safeSubsampling = when (subsampling) {
@@ -53,26 +51,23 @@ object MozJpegNative {
             else -> TJ_SAMPLING_420
         }
 
-        val flags = (if (progressive) TJ_FLAG_PROGRESSIVE else 0) or
-            if (accurateDct) TJ_FLAG_ACCURATEDCT else TJ_FLAG_FAST_DCT
-
-        return compressJpeg(
-            rgbPixels = rgbPixels,
-            width = width,
-            height = height,
+        return compressBitmapToFileDescriptorNative(
+            bitmap = bitmap,
+            outputFileDescriptor = outputFileDescriptor,
             quality = safeQuality,
             subsampling = safeSubsampling,
-            flags = flags
+            progressive = progressive,
+            accurateDct = accurateDct
         )
     }
 
     @JvmStatic
-    private external fun compressJpeg(
-        rgbPixels: ByteArray,
-        width: Int,
-        height: Int,
+    private external fun compressBitmapToFileDescriptorNative(
+        bitmap: Bitmap,
+        outputFileDescriptor: Int,
         quality: Int,
         subsampling: Int,
-        flags: Int
-    ): ByteArray?
+        progressive: Boolean,
+        accurateDct: Boolean
+    ): Boolean
 }

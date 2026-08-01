@@ -101,7 +101,7 @@ class BatchWorkerTest {
             id = "$batchId-item-0",
             batchId = batchId,
             position = 0,
-            sourceUri = "content://source/0",
+            sourceUri = "file:///data/local/tmp/source-0.jpg",
             inputName = "image-0.jpg",
             outputName = "image-0.jpg",
             inputBytes = 100L

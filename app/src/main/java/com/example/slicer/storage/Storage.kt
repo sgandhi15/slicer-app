@@ -431,17 +431,6 @@ private fun rotateBitmapForOrientation(bitmap: Bitmap, orientation: Int): Bitmap
     }.getOrNull() ?: bitmap
 }
 
-internal fun Context.writeByteArrayToUri(outputUri: Uri, data: ByteArray): Boolean {
-    if (data.isEmpty()) return false
-
-    return runCatching {
-        contentResolver.openOutputStream(outputUri, "wt")?.use { output ->
-            output.write(data)
-            output.flush()
-        } ?: throw IOException("Could not open output file for writing.")
-    }.isSuccess
-}
-
 internal suspend fun Context.copyUriContent(sourceUri: Uri, destinationUri: Uri): Long {
     return withContext(Dispatchers.IO) {
         contentResolver.openInputStream(sourceUri)?.use { input ->

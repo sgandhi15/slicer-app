@@ -5,13 +5,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.home.BatchSetupContent
 import com.example.slicer.home.BatchResultsPanel
 import com.example.slicer.home.QualityStepContent
@@ -51,10 +54,13 @@ class SlicerComponentsUiTest {
 
         composeTestRule.setContent {
             SlicerTheme {
-                BatchSetupContent(
-                    selectedImages = emptyList(),
-                    status = null,
-                    controlsEnabled = true,
+                    BatchSetupContent(
+                        selectedImages = emptyList(),
+                        status = null,
+                        isValidating = false,
+                        validatedCount = 0,
+                        validationTotal = 0,
+                        controlsEnabled = true,
                     onSelectImages = { pickerClicked = true },
                     onRemoveImage = {}
                 )
@@ -73,10 +79,13 @@ class SlicerComponentsUiTest {
 
         composeTestRule.setContent {
             SlicerTheme {
-                BatchSetupContent(
-                    selectedImages = listOf(firstUri, secondUri),
-                    status = null,
-                    controlsEnabled = true,
+                    BatchSetupContent(
+                        selectedImages = listOf(firstUri, secondUri),
+                        status = null,
+                        isValidating = false,
+                        validatedCount = 0,
+                        validationTotal = 0,
+                        controlsEnabled = true,
                     onSelectImages = {},
                     onRemoveImage = { removedUri = it }
                 )
@@ -91,12 +100,34 @@ class SlicerComponentsUiTest {
     }
 
     @Test
+    fun selectionValidationShowsProgress() {
+        composeTestRule.setContent {
+            SlicerTheme {
+                BatchSetupContent(
+                    selectedImages = emptyList(),
+                    status = null,
+                    isValidating = true,
+                    validatedCount = 2,
+                    validationTotal = 5,
+                    controlsEnabled = true,
+                    onSelectImages = {},
+                    onRemoveImage = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("image-validation-progress").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Validating 2 of 5").assertIsDisplayed()
+    }
+
+    @Test
     fun failedResultRowIsNotClickable() {
         composeTestRule.setContent {
             SlicerTheme {
                 BatchResultsPanel(
                     results = listOf(
                         BatchFileResult(
+                            id = "failed",
                             inputUri = Uri.parse("content://com.example.slicer/failed.jpg"),
                             inputName = "Failed photo",
                             outputUri = null,
@@ -106,13 +137,17 @@ class SlicerComponentsUiTest {
                             message = "Could not process"
                         )
                     ),
+                    summary = ProcessingProgress(total = 1, completed = 1, failedCount = 1),
+                    totalInputBytes = 1200L,
+                    totalOutputBytes = 0L,
+                    totalSavedBytes = 0L,
                     onResultClick = {}
                 )
             }
         }
 
         composeTestRule.onAllNodesWithText("Failed").assertCountEquals(2)
-        composeTestRule.onNodeWithTag("slicer-result-row-0").assertHasNoClickAction()
+        composeTestRule.onNodeWithTag("slicer-result-row-failed").assertHasNoClickAction()
     }
 
     @Test
@@ -124,6 +159,7 @@ class SlicerComponentsUiTest {
                 BatchResultsPanel(
                     results = listOf(
                         BatchFileResult(
+                            id = "success",
                             inputUri = Uri.parse("content://com.example.slicer/success.jpg"),
                             inputName = "Result photo",
                             outputUri = Uri.parse("content://com.example.slicer/success-out.jpg"),
@@ -133,12 +169,82 @@ class SlicerComponentsUiTest {
                             message = null
                         )
                     ),
+                    summary = ProcessingProgress(total = 1, completed = 1, compressedCount = 1),
+                    totalInputBytes = 1200L,
+                    totalOutputBytes = 600L,
+                    totalSavedBytes = 600L,
                     onResultClick = { clicked = true }
                 )
             }
         }
 
-        composeTestRule.onNodeWithTag("slicer-result-row-0").performClick()
+        composeTestRule.onNodeWithTag("slicer-result-row-success").performClick()
         assertTrue(clicked)
+    }
+
+    @Test
+    fun resultListScrollsToAStableItemId() {
+        val results = List(50) { index ->
+            BatchFileResult(
+                id = "result-$index",
+                inputUri = Uri.parse("content://com.example.slicer/source/$index.jpg"),
+                inputName = "Image $index",
+                outputUri = Uri.parse("content://com.example.slicer/output/$index.jpg"),
+                decision = ProcessingDecision.Compressed,
+                inputBytes = 1200L,
+                outputBytes = 600L
+            )
+        }
+        composeTestRule.setContent {
+            SlicerTheme {
+                BatchResultsPanel(
+                    results = results,
+                    summary = ProcessingProgress(total = 50, completed = 50, compressedCount = 50),
+                    totalInputBytes = 60_000L,
+                    totalOutputBytes = 30_000L,
+                    totalSavedBytes = 30_000L,
+                    onResultClick = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("slicer-result-list")
+            .performScrollToNode(hasTestTag("slicer-result-row-result-49"))
+        composeTestRule.onNodeWithTag("slicer-result-row-result-49").assertIsDisplayed()
+    }
+
+    @Test
+    fun resultSummaryUsesPersistedCounters() {
+        val result = BatchFileResult(
+            id = "summary-result",
+            inputUri = Uri.parse("content://com.example.slicer/source/summary.jpg"),
+            inputName = "Summary image",
+            outputUri = Uri.parse("content://com.example.slicer/output/summary.jpg"),
+            decision = ProcessingDecision.Compressed,
+            inputBytes = 1200L,
+            outputBytes = 600L
+        )
+        composeTestRule.setContent {
+            SlicerTheme {
+                BatchResultsPanel(
+                    results = listOf(result),
+                    summary = ProcessingProgress(
+                        total = 12,
+                        completed = 12,
+                        compressedCount = 7,
+                        copiedCount = 3,
+                        failedCount = 2
+                    ),
+                    totalInputBytes = 12_000L,
+                    totalOutputBytes = 7_000L,
+                    totalSavedBytes = 5_000L,
+                    onResultClick = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("7").assertIsDisplayed()
+        composeTestRule.onNodeWithText("3").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2").assertIsDisplayed()
     }
 }

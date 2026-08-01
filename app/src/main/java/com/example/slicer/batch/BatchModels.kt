@@ -75,7 +75,8 @@ internal data class BatchEntity(
     ],
     indices = [
         Index("batchId"),
-        Index(value = ["batchId", "position"], unique = true)
+        Index(value = ["batchId", "position"], unique = true),
+        Index(value = ["sourceUri", "state"])
     ]
 )
 internal data class BatchItemEntity(

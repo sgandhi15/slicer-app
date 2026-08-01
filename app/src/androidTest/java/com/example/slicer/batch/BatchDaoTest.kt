@@ -266,6 +266,48 @@ class BatchDaoTest {
     }
 
     @Test
+    fun mixedTerminalTransitionsUpdatePersistedSummaryIncrementally() = runBlocking {
+        createBatch(itemCount = 4)
+
+        val compressed = requireNotNull(dao.claimNextItem(BATCH_ID))
+        dao.completeItem(
+            itemId = compressed.id,
+            batchId = BATCH_ID,
+            state = BatchItemState.Compressed,
+            outputUri = "content://output/compressed",
+            outputBytes = 60L,
+            message = null
+        )
+        val copied = requireNotNull(dao.claimNextItem(BATCH_ID))
+        dao.completeItem(
+            itemId = copied.id,
+            batchId = BATCH_ID,
+            state = BatchItemState.CopiedOriginal,
+            outputUri = "content://output/copied",
+            outputBytes = 100L,
+            message = null
+        )
+        val failed = requireNotNull(dao.claimNextItem(BATCH_ID))
+        dao.requeueOrFailProcessingItem(
+            itemId = failed.id,
+            batchId = BATCH_ID,
+            maxAttempts = 1,
+            message = "Permanent provider failure."
+        )
+        dao.requestCancellation(BATCH_ID)
+
+        val batch = requireNotNull(dao.getBatch(BATCH_ID))
+        assertEquals(4, batch.completedCount)
+        assertEquals(1, batch.compressedCount)
+        assertEquals(1, batch.copiedCount)
+        assertEquals(1, batch.failedCount)
+        assertEquals(1, batch.cancelledCount)
+        assertEquals(400L, batch.totalInputBytes)
+        assertEquals(160L, batch.totalOutputBytes)
+        assertEquals(40L, batch.totalSavedBytes)
+    }
+
+    @Test
     fun repeatedlyInterruptedItemFailsAtAttemptLimit() = runBlocking {
         createBatch(itemCount = 2)
         val interrupted = requireNotNull(dao.claimNextItem(BATCH_ID))

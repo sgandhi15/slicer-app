@@ -3,20 +3,20 @@ package com.example.slicer.processing
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_422
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
-import com.example.slicer.core.MAX_COMPRESSION_PIXELS
 import com.example.slicer.storage.loadBitmapForCompression
-import com.example.slicer.storage.writeByteArrayToUri
 import com.example.slicer.telemetry.logMozJpegEventTelemetry
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.File
 
 internal data class JpegCompressionResult(
     val succeeded: Boolean,
@@ -26,13 +26,11 @@ internal data class JpegCompressionResult(
 private data class ImageBounds(
     val width: Int,
     val height: Int
-) {
-    val pixels: Long = width.toLong() * height.toLong()
-}
+)
 
 internal suspend fun Context.compressJpegImage(
     inputUri: Uri,
-    outputUri: Uri,
+    outputFile: File,
     quality: Int
 ): JpegCompressionResult = withContext(Dispatchers.IO) {
     runCatching {
@@ -42,10 +40,18 @@ internal suspend fun Context.compressJpegImage(
                 message = "Could not read JPEG dimensions; original file was preserved."
             )
 
-        if (bounds.pixels > MAX_COMPRESSION_PIXELS) {
+        val memoryDecision = evaluateEncodingMemory(bounds.width, bounds.height)
+        if (!memoryDecision.canEncode) {
+            val message = when (memoryDecision.rejection) {
+                EncodingMemoryRejection.ImageTooLarge ->
+                    "Image is too large to compress safely (${bounds.width} x ${bounds.height}); original file was preserved."
+
+                else ->
+                    "Not enough memory is available to compress this image safely (${bounds.width} x ${bounds.height}); original file was preserved."
+            }
             return@runCatching JpegCompressionResult(
                 succeeded = false,
-                message = "Image is too large to compress safely (${bounds.width} x ${bounds.height}); original file was preserved."
+                message = message
             )
         }
 
@@ -55,22 +61,15 @@ internal suspend fun Context.compressJpegImage(
                 message = "Unable to decode JPEG data; original file was preserved."
             )
         try {
-            val encoded = bitmap.encodeJpegViaMozJpeg(quality)
-                ?: return@runCatching JpegCompressionResult(
+            val encoded = bitmap.encodeJpegViaMozJpeg(outputFile, quality)
+            if (!encoded) {
+                return@runCatching JpegCompressionResult(
                     succeeded = false,
                     message = "MozJPEG compression failed; original file was preserved."
                 )
-
-            currentCoroutineContext().ensureActive()
-            val saved = writeByteArrayToUri(outputUri, encoded)
-
-            if (!saved) {
-                return@runCatching JpegCompressionResult(
-                    succeeded = false,
-                    message = "Could not write MozJPEG output; original file was preserved."
-                )
             }
 
+            currentCoroutineContext().ensureActive()
             JpegCompressionResult(succeeded = true)
         } finally {
             bitmap.recycle()
@@ -79,7 +78,11 @@ internal suspend fun Context.compressJpegImage(
         if (error is CancellationException) throw error
         JpegCompressionResult(
             succeeded = false,
-            message = error.message ?: "MozJPEG compression failed; original file was preserved."
+            message = if (error is OutOfMemoryError) {
+                "The image exceeded the available memory while compressing; original file was preserved."
+            } else {
+                error.message ?: "MozJPEG compression failed; original file was preserved."
+            }
         )
     }
 }
@@ -118,16 +121,10 @@ private data class MozJpegAttempt(
         }
 }
 
-private fun Bitmap.encodeJpegViaMozJpeg(quality: Int): ByteArray? {
+private fun Bitmap.encodeJpegViaMozJpeg(outputFile: File, quality: Int): Boolean {
     if (!MozJpegNative.isAvailable) {
         logMozJpegEventTelemetry("MozJPEG native module unavailable; ${MozJpegNative.runtimeStatusMessage()}.")
-        return null
-    }
-
-    val rgbBytes = toRgbByteArray()
-    if (rgbBytes.isEmpty()) {
-        logMozJpegEventTelemetry("MozJPEG encoding failed; bitmap pixel extraction returned empty buffer.")
-        return null
+        return false
     }
 
     val attempts = listOf(
@@ -142,23 +139,24 @@ private fun Bitmap.encodeJpegViaMozJpeg(quality: Int): ByteArray? {
     var failureReason: String? = null
     for (attempt in attempts) {
         val encoded = runCatching {
-            MozJpegNative.compressRgbToJpeg(
-                rgbPixels = rgbBytes,
-                width = width,
-                height = height,
-                quality = quality,
-                progressive = attempt.progressive,
-                subsampling = attempt.subsampling,
-                accurateDct = attempt.accurateDct
-            )
-        }.getOrNull()
+            ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { descriptor ->
+                MozJpegNative.compressBitmapToJpeg(
+                    bitmap = this,
+                    outputFileDescriptor = descriptor.fd,
+                    quality = quality,
+                    progressive = attempt.progressive,
+                    subsampling = attempt.subsampling,
+                    accurateDct = attempt.accurateDct
+                )
+            }
+        }.getOrDefault(false)
 
-        if (encoded == null) {
+        if (!encoded) {
             failureReason = "${attempt.describe} returned no output"
             continue
         }
 
-        if (!encoded.isLikelyUsableJpeg(width, height, this)) {
+        if (!outputFile.isLikelyUsableJpeg(width, height, this)) {
             failureReason = "${attempt.describe} failed post-encode validation"
             continue
         }
@@ -167,41 +165,13 @@ private fun Bitmap.encodeJpegViaMozJpeg(quality: Int): ByteArray? {
             logMozJpegEventTelemetry("MozJPEG native output succeeded using alternate attempt: ${attempt.describe}")
         }
 
-        return encoded
+        return true
     }
 
     logMozJpegEventTelemetry("MozJPEG encoding failed; $failureReason.")
 
-    return null
+    return false
 }
 
-private fun Bitmap.toRgbByteArray(): ByteArray {
-    if (isRecycled || width <= 0 || height <= 0) {
-        return ByteArray(0)
-    }
-
-    val normalizedBitmap = if (config == Bitmap.Config.ARGB_8888) {
-        this
-    } else {
-        copy(Bitmap.Config.ARGB_8888, false) ?: this
-    }
-
-    val imageWidth = width
-    val imageHeight = height
-    val argb = IntArray(imageWidth * imageHeight)
-    normalizedBitmap.getPixels(argb, 0, imageWidth, 0, 0, imageWidth, imageHeight)
-
-    if (normalizedBitmap !== this) {
-        normalizedBitmap.recycle()
-    }
-
-    val rgbBytes = ByteArray(argb.size * 3)
-    var rgbIndex = 0
-    for (color in argb) {
-        rgbBytes[rgbIndex++] = ((color ushr 16) and 0xFF).toByte()
-        rgbBytes[rgbIndex++] = ((color ushr 8) and 0xFF).toByte()
-        rgbBytes[rgbIndex++] = (color and 0xFF).toByte()
-    }
-
-    return rgbBytes
-}
+private const val OUTPUT_FILE_MODE = ParcelFileDescriptor.MODE_WRITE_ONLY or
+    ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
