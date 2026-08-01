@@ -105,4 +105,38 @@ class BatchRepositoryTest {
         workManager.cancelUniqueWork(workName).awaitOperation()
         Unit
     }
+
+    @Test
+    fun cancellationWithProcessingItemEnqueuesIndependentCleanupWork() = runBlocking {
+        val batchId = UUID.randomUUID().toString()
+        dao.createBatch(
+            BatchEntity(
+                id = batchId,
+                createdAt = 1L,
+                quality = 80,
+                destinationUri = "content://destination",
+                totalCount = 1
+            ),
+            listOf(
+                BatchItemEntity(
+                    id = "$batchId-item",
+                    batchId = batchId,
+                    position = 0,
+                    sourceUri = "content://source",
+                    inputName = "source.jpg",
+                    outputName = "source.jpg",
+                    inputBytes = 100L
+                )
+            )
+        )
+        requireNotNull(dao.claimNextItem(batchId))
+
+        repository.requestCancellation(batchId)
+
+        val cleanupWorkName = batchCleanupWorkName(batchId)
+        val work = workManager.getWorkInfosForUniqueWork(cleanupWorkName).get(5, TimeUnit.SECONDS)
+        assertEquals(1, work.size)
+        workManager.cancelUniqueWork(cleanupWorkName).awaitOperation()
+        Unit
+    }
 }

@@ -12,7 +12,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 internal data class JpegCompressionResult(
@@ -58,6 +61,7 @@ internal suspend fun Context.compressJpegImage(
                     message = "MozJPEG compression failed; original file was preserved."
                 )
 
+            currentCoroutineContext().ensureActive()
             val saved = writeByteArrayToUri(outputUri, encoded)
 
             if (!saved) {
@@ -72,6 +76,7 @@ internal suspend fun Context.compressJpegImage(
             bitmap.recycle()
         }
     }.getOrElse { error ->
+        if (error is CancellationException) throw error
         JpegCompressionResult(
             succeeded = false,
             message = error.message ?: "MozJPEG compression failed; original file was preserved."

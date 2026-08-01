@@ -10,14 +10,11 @@ import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.JPEG_EXTENSION_SET
 import com.example.slicer.core.JPEG_MIME_TYPE_SET
 import com.example.slicer.core.JPEG_MIME_TYPES
-import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
 import com.example.slicer.core.PREFS_QUALITY_KEY
 import com.example.slicer.core.PREFS_WELCOME_SCREEN_SEEN_KEY
-import com.example.slicer.core.OUTPUT_MIME_TYPE
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -27,11 +24,12 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.MediaStore
-import android.util.Log
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import kotlin.math.ceil
@@ -73,11 +71,14 @@ internal fun Context.loadSavedOutputFolderUri(): Uri {
             return DEFAULT_OUTPUT_FOLDER_URI
         }
 
-    return if (canWriteToOutputFolder(uri)) {
-        uri
-    } else {
-        clearOutputFolderUri()
-        DEFAULT_OUTPUT_FOLDER_URI
+    return when (outputFolderAccess(uri)) {
+        OutputFolderAccess.Writable,
+        OutputFolderAccess.TemporarilyUnavailable -> uri
+
+        OutputFolderAccess.PermissionMissing -> {
+            clearOutputFolderUri()
+            DEFAULT_OUTPUT_FOLDER_URI
+        }
     }
 }
 
@@ -91,9 +92,23 @@ internal fun Context.clearOutputFolderUri() {
         .edit { remove(PREFS_OUTPUT_FOLDER_URI_KEY) }
 }
 
+internal enum class OutputFolderAccess {
+    Writable,
+    PermissionMissing,
+    TemporarilyUnavailable
+}
+
 internal fun Context.canWriteToOutputFolder(uri: Uri): Boolean {
+    return outputFolderAccess(uri) == OutputFolderAccess.Writable
+}
+
+internal fun Context.outputFolderAccess(uri: Uri): OutputFolderAccess {
     if (uri.isDefaultOutputFolder()) {
-        return Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED
+        return if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
+            OutputFolderAccess.Writable
+        } else {
+            OutputFolderAccess.TemporarilyUnavailable
+        }
     }
 
     val hasPersistedWritePermission = contentResolver.persistedUriPermissions.any { permission ->
@@ -101,10 +116,10 @@ internal fun Context.canWriteToOutputFolder(uri: Uri): Boolean {
     }
 
     if (!hasPersistedWritePermission) {
-        return false
+        return OutputFolderAccess.PermissionMissing
     }
 
-    return runCatching {
+    return try {
         val documentId = DocumentsContract.getTreeDocumentId(uri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
         contentResolver.query(
@@ -114,9 +129,12 @@ internal fun Context.canWriteToOutputFolder(uri: Uri): Boolean {
             null,
             null
         )?.use { cursor ->
-            cursor.count >= 0
-        } ?: false
-    }.getOrDefault(false)
+            cursor.count
+            OutputFolderAccess.Writable
+        } ?: OutputFolderAccess.TemporarilyUnavailable
+    } catch (_: Exception) {
+        OutputFolderAccess.TemporarilyUnavailable
+    }
 }
 
 internal fun Uri.isDefaultOutputFolder(): Boolean {
@@ -279,90 +297,6 @@ internal fun Context.hasJpegMagicHeader(uri: Uri): Boolean {
     }.getOrDefault(false)
 }
 
-internal fun Context.createOutputDocument(outputFolderUri: Uri, fileName: String): Uri? {
-    if (outputFolderUri.isDefaultOutputFolder()) {
-        return createDefaultOutputDocument(fileName)
-    }
-
-    val safeBaseName = if (fileName.isBlank()) "image.jpg" else fileName
-    val attemptedNames = mutableListOf(safeBaseName)
-    val stem = safeBaseName.substringBeforeLast('.').ifBlank { "image" }
-    val extension = safeBaseName.substringAfterLast('.', "")
-    if (extension.isNotBlank()) {
-        attemptedNames.add("${stem}_retry.${extension}")
-        attemptedNames.add("${stem}_retry_${System.currentTimeMillis()}.${extension}")
-    } else {
-        attemptedNames.add("${stem}_retry")
-        attemptedNames.add("${stem}_retry_${System.currentTimeMillis()}")
-    }
-
-    val candidateFolderUris = buildList {
-        add(outputFolderUri)
-        runCatching {
-            DocumentsContract.buildDocumentUriUsingTree(
-                outputFolderUri,
-                DocumentsContract.getTreeDocumentId(outputFolderUri)
-            )
-        }.onSuccess { add(it) }.onFailure {
-            Log.w(LOG_TAG, "Could not derive document URI for tree $outputFolderUri", it)
-        }
-    }.distinct()
-
-    for (name in attemptedNames) {
-        for (documentUri in candidateFolderUris) {
-            val created = runCatching {
-                DocumentsContract.createDocument(
-                    contentResolver,
-                    documentUri,
-                    OUTPUT_MIME_TYPE,
-                    name
-                )
-            }.onFailure { error ->
-                Log.w(
-                    LOG_TAG,
-                    "Could not create output file '$name' in '$documentUri': ${error.message}",
-                    error
-                )
-            }.getOrNull()
-
-            if (created != null) {
-                if (name != safeBaseName) {
-                    Log.i(LOG_TAG, "Using fallback output name '$name' after initial attempt failed for '$fileName'.")
-                }
-                return created
-            }
-        }
-    }
-
-    Log.e(
-        LOG_TAG,
-        "Could not create output document after retry attempts in folder '$outputFolderUri' for '$safeBaseName'."
-    )
-    return null
-}
-
-internal fun Context.createDefaultOutputDocument(fileName: String): Uri? {
-    val safeBaseName = if (fileName.isBlank()) "image.jpg" else fileName
-    val values = ContentValues().apply {
-        put(MediaStore.MediaColumns.DISPLAY_NAME, safeBaseName)
-        put(MediaStore.MediaColumns.MIME_TYPE, OUTPUT_MIME_TYPE)
-        put(MediaStore.MediaColumns.RELATIVE_PATH, DEFAULT_OUTPUT_RELATIVE_PATH)
-    }
-
-    val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-    val created = runCatching { contentResolver.insert(collection, values) }.getOrNull()
-
-    if (created == null) {
-        Log.w(
-            LOG_TAG,
-            "Could not create default output file '$safeBaseName' in '$DEFAULT_OUTPUT_RELATIVE_PATH'."
-        )
-        return null
-    }
-
-    return created
-}
-
 internal fun Context.resolveContentSize(uri: Uri): Long {
     val assetLength = runCatching {
         contentResolver.openAssetFileDescriptor(uri, "r")?.use { asset ->
@@ -501,27 +435,30 @@ internal fun Context.writeByteArrayToUri(outputUri: Uri, data: ByteArray): Boole
     if (data.isEmpty()) return false
 
     return runCatching {
-        contentResolver.openOutputStream(outputUri, "w")?.use { output ->
+        contentResolver.openOutputStream(outputUri, "wt")?.use { output ->
             output.write(data)
+            output.flush()
         } ?: throw IOException("Could not open output file for writing.")
     }.isSuccess
 }
 
-internal suspend fun Context.copyUriContent(sourceUri: Uri, destinationUri: Uri): Boolean {
+internal suspend fun Context.copyUriContent(sourceUri: Uri, destinationUri: Uri): Long {
     return withContext(Dispatchers.IO) {
-        runCatching {
-            contentResolver.openInputStream(sourceUri)?.use { input ->
-                contentResolver.openOutputStream(destinationUri, "w")?.use { output ->
-                    val buffer = ByteArray(DEFAULT_COPY_BUFFER_BYTES)
-                    while (true) {
-                        val bytesRead = input.read(buffer)
-                        if (bytesRead < 0) {
-                            break
-                        }
-                        output.write(buffer, 0, bytesRead)
-                    }
-                } ?: throw IOException("Could not open output destination")
-            } ?: throw IOException("Could not open source file")
-        }.isSuccess
+        contentResolver.openInputStream(sourceUri)?.use { input ->
+            contentResolver.openOutputStream(destinationUri, "wt")?.use { output ->
+                val buffer = ByteArray(DEFAULT_COPY_BUFFER_BYTES)
+                var copiedBytes = 0L
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val bytesRead = input.read(buffer)
+                    if (bytesRead < 0) break
+                    if (bytesRead == 0) continue
+                    output.write(buffer, 0, bytesRead)
+                    copiedBytes += bytesRead
+                }
+                output.flush()
+                copiedBytes
+            } ?: throw IOException("Could not open output destination")
+        } ?: throw IOException("Could not open source file")
     }
 }

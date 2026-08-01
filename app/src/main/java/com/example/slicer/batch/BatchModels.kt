@@ -6,8 +6,11 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 private const val BATCH_WORK_NAME_PREFIX = "slicer-batch-"
+private const val BATCH_CLEANUP_WORK_NAME_PREFIX = "slicer-batch-cleanup-"
 
 internal fun batchWorkName(batchId: String): String = "$BATCH_WORK_NAME_PREFIX$batchId"
+
+internal fun batchCleanupWorkName(batchId: String): String = "$BATCH_CLEANUP_WORK_NAME_PREFIX$batchId"
 
 internal enum class BatchState {
     Queued,

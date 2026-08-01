@@ -101,7 +101,27 @@ class BatchDaoTest {
     }
 
     @Test
-    fun interruptedItemKeepsRecordedOutputUriWhenRequeued() = runBlocking {
+    fun interruptedItemIsNotRequeuedUntilArtifactCleanupSucceeds() = runBlocking {
+        createBatch(itemCount = 1)
+        val interrupted = requireNotNull(dao.claimNextItem(BATCH_ID))
+
+        assertEquals(
+            0,
+            dao.recoverInterruptedItems(
+                batchId = BATCH_ID,
+                maxAttempts = 3,
+                blockedItemIds = setOf(interrupted.id)
+            )
+        )
+
+        val retained = dao.getItems(BATCH_ID).single()
+        assertEquals(BatchItemState.Processing, retained.state)
+        assertEquals(1, retained.attemptCount)
+        assertEquals(null, dao.claimNextItem(BATCH_ID))
+    }
+
+    @Test
+    fun interruptedItemClearsCleanedOutputUriWhenRequeued() = runBlocking {
         createBatch(itemCount = 1)
         val interrupted = requireNotNull(dao.claimNextItem(BATCH_ID))
         dao.recordOutputUri(
@@ -114,8 +134,26 @@ class BatchDaoTest {
 
         val requeued = dao.getItems(BATCH_ID).single()
         assertEquals(BatchItemState.Queued, requeued.state)
-        assertEquals("content://output/interrupted", requeued.outputUri)
-        assertEquals("provider-name.jpg", requeued.actualOutputName)
+        assertEquals(null, requeued.outputUri)
+        assertEquals(null, requeued.actualOutputName)
+    }
+
+    @Test
+    fun secondItemCannotBeClaimedWhileOneIsProcessing() = runBlocking {
+        createBatch(itemCount = 2)
+        val first = requireNotNull(dao.claimNextItem(BATCH_ID))
+
+        assertEquals(null, dao.claimNextItem(BATCH_ID))
+
+        dao.completeItem(
+            itemId = first.id,
+            batchId = BATCH_ID,
+            state = BatchItemState.CopiedOriginal,
+            outputUri = "content://output/first",
+            outputBytes = 100L,
+            message = null
+        )
+        assertEquals(1, requireNotNull(dao.claimNextItem(BATCH_ID)).position)
     }
 
     @Test
@@ -151,6 +189,27 @@ class BatchDaoTest {
     }
 
     @Test
+    fun transientFailureAfterCancellationCancelsInsteadOfRequeueing() = runBlocking {
+        createBatch(itemCount = 2)
+        val current = requireNotNull(dao.claimNextItem(BATCH_ID))
+        dao.requestCancellation(BATCH_ID)
+
+        assertTrue(
+            dao.requeueOrFailProcessingItem(
+                itemId = current.id,
+                batchId = BATCH_ID,
+                maxAttempts = 3,
+                message = "Provider unavailable."
+            )
+        )
+
+        val batch = requireNotNull(dao.getBatch(BATCH_ID))
+        assertEquals(BatchState.Cancelled, batch.state)
+        assertEquals(2, batch.cancelledCount)
+        assertTrue(dao.getItems(BATCH_ID).all { it.state == BatchItemState.Cancelled })
+    }
+
+    @Test
     fun secondUnfinishedBatchIsRejectedTransactionally() = runBlocking {
         createBatch(batchId = "first", itemCount = 1, createdAt = 1L)
 
@@ -167,7 +226,8 @@ class BatchDaoTest {
         createBatch(itemCount = 1)
         requireNotNull(dao.claimNextItem(BATCH_ID))
 
-        dao.prepareForWorkerRetry(BATCH_ID, maxAttempts = 3, error = "Worker stopped.")
+        dao.recoverInterruptedItems(BATCH_ID, maxAttempts = 3)
+        dao.markForWorkerRetry(BATCH_ID, error = "Worker stopped.")
 
         val batch = requireNotNull(dao.getBatch(BATCH_ID))
         assertEquals(BatchState.Retrying, batch.state)

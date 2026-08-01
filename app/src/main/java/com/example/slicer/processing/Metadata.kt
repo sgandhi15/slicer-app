@@ -5,6 +5,9 @@ import com.example.slicer.core.*
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 internal data class ParsedJpegMetadata(
     val nonMetadataSegments: List<ByteArray>,
@@ -16,7 +19,9 @@ internal suspend fun Context.preserveJpegMetadata(
     sourceUri: Uri,
     destinationUri: Uri
 ): Boolean {
+    currentCoroutineContext().ensureActive()
     val sourceBytes = contentResolver.openInputStream(sourceUri)?.use { it.readBytes() } ?: return false
+    currentCoroutineContext().ensureActive()
     val destinationBytes = contentResolver.openInputStream(destinationUri)?.use { it.readBytes() } ?: return false
 
     val sourceParsed = parseJpegMetadataBlocks(sourceBytes) ?: return false
@@ -55,11 +60,18 @@ internal suspend fun Context.preserveJpegMetadata(
             return false
         }
 
-        runCatching {
-            contentResolver.openOutputStream(destinationUri, "w")?.use { output ->
+        try {
+            currentCoroutineContext().ensureActive()
+            contentResolver.openOutputStream(destinationUri, "wt")?.use { output ->
                 output.write(mergedBytes)
+                output.flush()
             } ?: throw java.io.IOException("Could not open destination for metadata copy.")
-        }.isSuccess
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
     } finally {
         destinationBitmap.recycle()
     }

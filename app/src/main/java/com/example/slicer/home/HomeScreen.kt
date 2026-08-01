@@ -7,13 +7,14 @@ import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.JPEG_MIME_TYPES
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.SlicerScreen
-import com.example.slicer.storage.canWriteToOutputFolder
+import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.clearOutputFolderUri
 import com.example.slicer.storage.isSupportedJpegUri
 import com.example.slicer.storage.loadBitmapForPreview
 import com.example.slicer.storage.loadSavedOutputFolderUri
 import com.example.slicer.storage.loadSavedQuality
 import com.example.slicer.storage.markWelcomeScreenSeen
+import com.example.slicer.storage.outputFolderAccess
 import com.example.slicer.storage.readableName
 import com.example.slicer.storage.saveOutputFolderUri
 import com.example.slicer.storage.saveQuality
@@ -250,17 +251,9 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
         val supportedUris = uris.filter { uri -> context.isSupportedJpegUri(uri) }
         val selectedUris = supportedUris.distinct()
 
-        val skippedCount = uris.size - supportedUris.size
-
         selectedImages = selectedUris
         homeViewModel.dismissCurrentBatch()
         selectedResultForComparison = null
-        status = when {
-            selectedUris.isEmpty() && skippedCount > 0 -> "No supported files selected."
-            selectedUris.isEmpty() -> "No files selected yet."
-            skippedCount > 0 -> "${selectedUris.size} files selected, ${skippedCount} unsupported skipped."
-            else -> null
-        }
 
         currentScreen = SlicerScreen.Setup
 
@@ -286,9 +279,9 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 true
             }.getOrNull() == true
 
-            val usable = context.canWriteToOutputFolder(uri)
+            val folderAccess = context.outputFolderAccess(uri)
 
-            if (persistenceGranted && usable) {
+            if (persistenceGranted && folderAccess == OutputFolderAccess.Writable) {
                 outputFolder = uri
                 context.saveOutputFolderUri(uri)
                 if (durableState.needsDestination) {
@@ -297,10 +290,14 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 } else {
                     status = "Output folder selected and saved."
                 }
+            } else if (persistenceGranted && folderAccess == OutputFolderAccess.TemporarilyUnavailable) {
+                outputFolder = uri
+                context.saveOutputFolderUri(uri)
+                status = "Selected folder is temporarily unavailable. Try again when its provider is ready."
             } else {
                 outputFolder = DEFAULT_OUTPUT_FOLDER_URI
                 context.clearOutputFolderUri()
-                status = if (!usable) {
+                status = if (folderAccess == OutputFolderAccess.PermissionMissing) {
                     "Could not use selected folder. Please choose another location."
                 } else {
                     "Output folder selected for this session, but persistence could not be saved. " +

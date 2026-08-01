@@ -3,6 +3,7 @@ package com.example.slicer
 import android.app.Application
 import com.example.slicer.batch.BatchDatabase
 import com.example.slicer.batch.BatchRepository
+import com.example.slicer.storage.withOutputLifecycleLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +17,11 @@ class SlicerApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        applicationScope.launch { batchRepository.resumeIncompleteBatches() }
+        applicationScope.launch {
+            withOutputLifecycleLock {
+                batchRepository.cleanupAbandonedArtifacts()
+                batchRepository.resumeIncompleteBatches()
+            }
+        }
     }
 }

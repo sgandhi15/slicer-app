@@ -390,6 +390,18 @@ Temporary output publishing, scalable selection validation, URI staging or grant
 - Delete partial SAF documents and abandoned temporary files.
 - Define retry and cancellation behavior.
 
+Phase 2 is complete when:
+
+- Compression, metadata preservation, and original-file fallback operate only on one deterministic app-private temporary file at a time.
+- A destination document is not created until the temporary output has passed processing validation.
+- Default-folder MediaStore rows remain `IS_PENDING=1` until their complete contents have been written, then become visible with `IS_PENDING=0`.
+- SAF outputs use an item-specific recovery suffix because SAF has no pending-row transaction; the provider's actual created name is persisted with the result.
+- A failed or system-interrupted publication deletes its known MediaStore or SAF destination before the item can be retried.
+- Startup and worker recovery remove abandoned temporary files, orphaned pending MediaStore rows, and tracked incomplete destination documents.
+- User cancellation stops queue advancement after the current image, while a WorkManager stop cleans and requeues the interrupted image.
+- Transient file and provider failures retry at most three item attempts using fresh, exponentially delayed WorkManager requests.
+- If an incomplete output cannot be confirmed deleted, its item remains blocked in recoverable state and is never reused, overwritten, or requeued until cleanup succeeds.
+
 ### Phase 3: Scalable Selection And Results
 
 - Move URI validation off the main thread.

@@ -4,17 +4,32 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.work.ExistingWorkPolicy
+import androidx.work.BackoffPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkRequest
 import androidx.work.WorkManager
 import androidx.work.await
 import androidx.work.workDataOf
-import com.example.slicer.storage.canWriteToOutputFolder
+import com.example.slicer.storage.cleanupAbandonedOutputTemps
+import com.example.slicer.storage.cleanupOrphanedPendingMediaStoreOutputs
+import com.example.slicer.storage.cleanupUntrackedSafOutput
+import com.example.slicer.storage.deleteOutputDocument
+import com.example.slicer.storage.isDefaultOutputFolder
+import com.example.slicer.storage.OutputFolderAccess
+import com.example.slicer.storage.outputFolderAccess
+import android.util.Log
+import com.example.slicer.core.LOG_TAG
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+
+internal data class BatchArtifactCleanupReport(
+    val blockedProcessingItemIds: Set<String>
+)
 
 internal class BatchRepository(
     private val context: Context,
@@ -79,22 +94,14 @@ internal class BatchRepository(
                     if (cancellationRequested()) {
                         dao.requestCancellation(batchId)
                     } else {
-                        dao.prepareForWorkerRetry(
-                            batchId = batchId,
-                            maxAttempts = MAX_ITEM_ATTEMPTS,
-                            error = "Scheduling batch processing was interrupted."
-                        )
+                        dao.markForWorkerRetry(batchId, "Scheduling batch processing was interrupted.")
                     }
                 }
             }
             throw cancelled
         } catch (error: Exception) {
             if (dao.getBatch(batchId) != null) {
-                dao.prepareForWorkerRetry(
-                    batchId = batchId,
-                    maxAttempts = MAX_ITEM_ATTEMPTS,
-                    error = error.message ?: "Could not schedule batch processing."
-                )
+                dao.markForWorkerRetry(batchId, error.message ?: "Could not schedule batch processing.")
                 return@withContext batchId
             }
             throw error
@@ -107,29 +114,92 @@ internal class BatchRepository(
             try {
                 enqueue(batchId)
             } catch (error: Exception) {
-                dao.prepareForWorkerRetry(
-                    batchId = batchId,
-                    maxAttempts = MAX_ITEM_ATTEMPTS,
-                    error = error.message ?: "Could not resume batch processing."
-                )
+                dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
             }
         }
     }
 
     suspend fun requestCancellation(batchId: String) {
-        dao.requestCancellation(batchId)
+        if (dao.requestCancellation(batchId) && dao.getProcessingItems(batchId).isNotEmpty()) {
+            try {
+                enqueueCleanup(batchId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                dao.recordActiveError(
+                    batchId,
+                    error.message ?: "Could not schedule incomplete-output cleanup."
+                )
+            }
+        }
+    }
+
+    suspend fun cleanupAbandonedArtifacts() = withContext(Dispatchers.IO) {
+        val processingItems = dao.getAllProcessingItems()
+        val blockedItemIds = mutableSetOf<String>()
+        val temporaryOutputsCleaned = context.cleanupAbandonedOutputTemps()
+        if (!temporaryOutputsCleaned) {
+            Log.w(LOG_TAG, "Could not remove every abandoned temporary output.")
+            processingItems.mapTo(blockedItemIds) { item -> item.id }
+        }
+
+        val pendingMediaStoreOutputsCleaned = context.cleanupOrphanedPendingMediaStoreOutputs()
+        if (!pendingMediaStoreOutputsCleaned) {
+            Log.w(LOG_TAG, "Could not remove every abandoned pending MediaStore output.")
+        }
+
+        dao.getIncompleteOutputItems().forEach { item ->
+            val outputUri = item.outputUri?.let(Uri::parse) ?: return@forEach
+            val batch = dao.getBatch(item.batchId)
+            val destinationUri = batch?.destinationUri?.let(Uri::parse)
+            val uriCleaned = context.deleteOutputDocument(outputUri)
+            val namesCleaned = destinationUri == null || destinationUri.isDefaultOutputFolder() ||
+                context.cleanupUntrackedSafOutput(
+                    outputFolderUri = destinationUri,
+                    itemId = item.id
+                )
+            if (uriCleaned && namesCleaned) {
+                dao.clearIncompleteOutputUri(item.id, item.batchId)
+            } else if (item.state == BatchItemState.Processing) {
+                blockedItemIds += item.id
+            }
+        }
+
+        processingItems.filter { item -> item.outputUri == null }.forEach { item ->
+            val batch = dao.getBatch(item.batchId)
+            val destinationUri = batch?.destinationUri?.let(Uri::parse)
+            val cleaned = when {
+                destinationUri == null -> false
+                destinationUri.isDefaultOutputFolder() -> pendingMediaStoreOutputsCleaned
+                else -> context.cleanupUntrackedSafOutput(destinationUri, item.id)
+            }
+            if (!cleaned) blockedItemIds += item.id
+        }
+
+        BatchArtifactCleanupReport(blockedItemIds)
+    }
+
+    suspend fun scheduleItemRetry(batchId: String, attemptCount: Int) {
+        val multiplier = 1L shl (attemptCount - 1).coerceIn(0, MAX_RETRY_DELAY_EXPONENT)
+        enqueue(
+            batchId = batchId,
+            policy = ExistingWorkPolicy.APPEND_OR_REPLACE,
+            initialDelayMillis = WorkRequest.MIN_BACKOFF_MILLIS * multiplier
+        )
     }
 
     suspend fun cancelActiveBatches() {
         withContext(Dispatchers.IO) {
-            dao.getActiveBatchIds().forEach { batchId -> dao.requestCancellation(batchId) }
+            dao.getActiveBatchIds().forEach { batchId -> requestCancellation(batchId) }
         }
     }
 
     suspend fun replaceDestinationAndResume(batchId: String, destinationUri: Uri) {
         withContext(Dispatchers.IO) {
-            check(context.canWriteToOutputFolder(destinationUri)) {
-                "Output folder permission is no longer available."
+            when (context.outputFolderAccess(destinationUri)) {
+                OutputFolderAccess.Writable -> Unit
+                OutputFolderAccess.PermissionMissing -> error("Output folder permission is no longer available.")
+                OutputFolderAccess.TemporarilyUnavailable -> error("Output folder provider is temporarily unavailable.")
             }
             check(dao.replaceDestination(batchId, destinationUri.toString()) == 1) {
                 "This batch is not waiting for a new output folder."
@@ -137,11 +207,7 @@ internal class BatchRepository(
             try {
                 enqueue(batchId, ExistingWorkPolicy.APPEND_OR_REPLACE)
             } catch (error: Exception) {
-                dao.prepareForWorkerRetry(
-                    batchId = batchId,
-                    maxAttempts = MAX_ITEM_ATTEMPTS,
-                    error = error.message ?: "Could not resume batch processing."
-                )
+                dao.markForWorkerRetry(batchId, error.message ?: "Could not resume batch processing.")
             }
         }
     }
@@ -164,15 +230,41 @@ internal class BatchRepository(
 
     private suspend fun enqueue(
         batchId: String,
-        policy: ExistingWorkPolicy = ExistingWorkPolicy.KEEP
+        policy: ExistingWorkPolicy = ExistingWorkPolicy.KEEP,
+        initialDelayMillis: Long = 0L
     ) {
-        val request = OneTimeWorkRequestBuilder<BatchWorker>()
+        val requestBuilder = OneTimeWorkRequestBuilder<BatchWorker>()
             .setInputData(workDataOf(BatchWorker.BATCH_ID_KEY to batchId))
-            .build()
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                WorkRequest.MIN_BACKOFF_MILLIS,
+                TimeUnit.MILLISECONDS
+            )
+        if (initialDelayMillis > 0L) {
+            requestBuilder.setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
+        }
+        val request = requestBuilder.build()
         workManager.enqueueUniqueWork(batchWorkName(batchId), policy, request).await()
     }
 
-    private companion object {
-        const val MAX_ITEM_ATTEMPTS = 3
+    private suspend fun enqueueCleanup(batchId: String) {
+        val request = OneTimeWorkRequestBuilder<BatchWorker>()
+            .setInputData(workDataOf(BatchWorker.BATCH_ID_KEY to batchId))
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                WorkRequest.MIN_BACKOFF_MILLIS,
+                TimeUnit.MILLISECONDS
+            )
+            .build()
+        workManager.enqueueUniqueWork(
+            batchCleanupWorkName(batchId),
+            ExistingWorkPolicy.KEEP,
+            request
+        ).await()
     }
+
+    private companion object {
+        const val MAX_RETRY_DELAY_EXPONENT = 4
+    }
+
 }
