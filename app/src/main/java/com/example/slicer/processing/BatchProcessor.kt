@@ -4,6 +4,9 @@ import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.storage.copyUriContent
+import com.example.slicer.telemetry.MeasuredInputStream
+import com.example.slicer.telemetry.ProcessingMetricsRecorder
+import com.example.slicer.telemetry.ProcessingStage
 
 import android.content.Context
 import android.net.Uri
@@ -30,25 +33,42 @@ internal suspend fun processBatchItem(
     inputUri: Uri,
     tempFile: File,
     quality: Int,
-    inputBytes: Long
+    inputBytes: Long,
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
 ): PreparedBatchOutput = withContext(Dispatchers.IO) {
     val result = processSingleImage(
         context = context,
         inputUri = inputUri,
         outputFile = tempFile,
         quality = quality,
-        inputBytes = inputBytes
+        inputBytes = inputBytes,
+        metrics = metrics
     )
     val actualBytes = tempFile.length()
     if (!tempFile.isFile || actualBytes <= 0L || actualBytes != result.outputBytes) {
         throw IOException("Prepared output size failed final validation.")
     }
     val coroutineContext = currentCoroutineContext()
-    val inspection = tempFile.inspectCompleteJpeg(
-        expectedDimensions = result.expectedDimensions,
-        allowTrailingBytes = result.decision == ProcessingDecision.CopiedOriginal && inputBytes > 0L,
-        checkpoint = coroutineContext::ensureActive
-    )
+    var validationBytesRead = 0L
+    val inspection = try {
+        metrics.measure(ProcessingStage.FinalValidation) {
+            tempFile.inputStream().use { input ->
+                val measured = MeasuredInputStream(input)
+                try {
+                    inspectCompleteJpeg(
+                        input = measured,
+                        expectedDimensions = result.expectedDimensions,
+                        allowTrailingBytes = result.decision == ProcessingDecision.CopiedOriginal && inputBytes > 0L,
+                        checkpoint = coroutineContext::ensureActive
+                    )
+                } finally {
+                    validationBytesRead = measured.bytesRead
+                }
+            }
+        }
+    } finally {
+        metrics.recordIo(ProcessingStage.FinalValidation, bytesRead = validationBytesRead)
+    }
     if (inspection is JpegInspectionResult.Invalid) {
         val message = "Prepared output is not a complete JPEG: ${inspection.reason}"
         if (result.decision == ProcessingDecision.CopiedOriginal && inputBytes <= 0L) {
@@ -64,13 +84,14 @@ private suspend fun processSingleImage(
     inputUri: Uri,
     outputFile: File,
     quality: Int,
-    inputBytes: Long
+    inputBytes: Long,
+    metrics: ProcessingMetricsRecorder
 ): PreparedBatchOutput {
     val outputUri = outputFile.toUri()
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
     val compressionResult = try {
-        context.compressJpegImage(inputUri, outputFile, q)
+        context.compressJpegImage(inputUri, outputFile, q, metrics)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Exception) {
@@ -87,7 +108,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = compressionResult.message ?: "MozJPEG compression failed; original file was preserved.",
-            expectedDimensions = compressionResult.dimensions
+            expectedDimensions = compressionResult.dimensions,
+            metrics = metrics
         )
     }
 
@@ -102,7 +124,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = "Compressed output was invalid.",
-            expectedDimensions = dimensions
+            expectedDimensions = dimensions,
+            metrics = metrics
         )
     }
 
@@ -113,7 +136,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = "Compressed output was larger than source.",
-            expectedDimensions = dimensions
+            expectedDimensions = dimensions,
+            metrics = metrics
         )
     }
 
@@ -121,7 +145,8 @@ private suspend fun processSingleImage(
         sourceUri = inputUri,
         encodedFile = outputFile,
         expectedDimensions = dimensions,
-        maximumOutputBytes = inputBytes.takeIf { it > 0L }
+        maximumOutputBytes = inputBytes.takeIf { it > 0L },
+        metrics = metrics
     )
     if (!metadataCopied) {
         return fallbackToOriginalOrFail(
@@ -130,7 +155,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = "Metadata could not be copied safely; original file was preserved.",
-            expectedDimensions = dimensions
+            expectedDimensions = dimensions,
+            metrics = metrics
         )
     }
 
@@ -142,7 +168,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = "Compressed output with metadata was larger than source.",
-            expectedDimensions = dimensions
+            expectedDimensions = dimensions,
+            metrics = metrics
         )
     }
 
@@ -153,7 +180,8 @@ private suspend fun processSingleImage(
             inputBytes = inputBytes,
             outputUri = outputUri,
             outputLabel = "Compressed output with metadata was invalid.",
-            expectedDimensions = dimensions
+            expectedDimensions = dimensions,
+            metrics = metrics
         )
     }
 
@@ -171,9 +199,17 @@ private suspend fun fallbackToOriginalOrFail(
     inputBytes: Long,
     outputUri: Uri,
     outputLabel: String,
-    expectedDimensions: JpegDimensions?
+    expectedDimensions: JpegDimensions?,
+    metrics: ProcessingMetricsRecorder
 ): PreparedBatchOutput {
-    val copiedBytes = context.copyUriContent(inputUri, outputUri)
+    val copiedBytes = metrics.measure(ProcessingStage.OriginalCopy) {
+        context.copyUriContent(inputUri, outputUri)
+    }
+    metrics.recordIo(
+        stage = ProcessingStage.OriginalCopy,
+        bytesRead = copiedBytes,
+        bytesWritten = copiedBytes
+    )
     if (inputBytes > 0L && copiedBytes != inputBytes) {
         throw IOException("Source changed while it was being copied.")
     }

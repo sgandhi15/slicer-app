@@ -11,6 +11,6 @@
 #   public *;
 #}
 
--keepclassmembers class com.example.slicer.MozJpegNative {
+-keep,allowoptimization class com.example.slicer.processing.MozJpegNative {
     native <methods>;
 }

@@ -4,6 +4,9 @@ import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_422
 import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
 import com.example.slicer.storage.loadBitmapForCompression
+import com.example.slicer.telemetry.MeasuredInputStream
+import com.example.slicer.telemetry.ProcessingMetricsRecorder
+import com.example.slicer.telemetry.ProcessingStage
 import com.example.slicer.telemetry.logMozJpegEventTelemetry
 
 import android.content.Context
@@ -26,13 +29,27 @@ internal data class JpegCompressionResult(
 internal suspend fun Context.compressJpegImage(
     inputUri: Uri,
     outputFile: File,
-    quality: Int
+    quality: Int,
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
 ): JpegCompressionResult = withContext(Dispatchers.IO) {
     runCatching {
         val coroutineContext = currentCoroutineContext()
-        val headerInspection = contentResolver.openInputStream(inputUri)?.use { input ->
-            inspectJpegHeader(input, checkpoint = coroutineContext::ensureActive)
+        var headerBytesRead = 0L
+        val headerInspection = try {
+            metrics.measure(ProcessingStage.HeaderRead) {
+                contentResolver.openInputStream(inputUri)?.use { input ->
+                    val measured = MeasuredInputStream(input)
+                    try {
+                        inspectJpegHeader(measured, checkpoint = coroutineContext::ensureActive)
+                    } finally {
+                        headerBytesRead = measured.bytesRead
+                    }
+                }
+            }
+        } finally {
+            metrics.recordIo(ProcessingStage.HeaderRead, bytesRead = headerBytesRead)
         }
+        headerInspection
             ?: return@runCatching JpegCompressionResult(
                 succeeded = false,
                 message = "Could not read JPEG dimensions; original file was preserved."
@@ -47,7 +64,14 @@ internal suspend fun Context.compressJpegImage(
             }
         }
 
-        val memoryDecision = evaluateEncodingMemory(dimensions.width, dimensions.height)
+        val memoryDecision = metrics.measure(ProcessingStage.MemoryAdmission) {
+            evaluateEncodingMemory(dimensions.width, dimensions.height)
+        }
+        metrics.recordMemoryDecision(
+            estimatedPeakBytes = memoryDecision.estimatedPeakBytes,
+            estimatedAppHeapBytes = memoryDecision.estimatedAppHeapBytes,
+            rejection = memoryDecision.rejection?.name
+        )
         if (!memoryDecision.canEncode) {
             val message = when (memoryDecision.rejection) {
                 EncodingMemoryRejection.ImageTooLarge ->
@@ -63,7 +87,12 @@ internal suspend fun Context.compressJpegImage(
             )
         }
 
-        val bitmap = loadBitmapForCompression(inputUri)
+        var decodedBytesRead = 0L
+        val bitmap = metrics.measure(ProcessingStage.BitmapDecode) {
+            loadBitmapForCompression(inputUri) { bytesRead -> decodedBytesRead = bytesRead }
+        }
+        metrics.recordIo(ProcessingStage.BitmapDecode, bytesRead = decodedBytesRead)
+        bitmap
             ?: return@runCatching JpegCompressionResult(
                 succeeded = false,
                 message = "Unable to decode JPEG data; original file was preserved.",
@@ -78,7 +107,7 @@ internal suspend fun Context.compressJpegImage(
                 )
             }
 
-            val encoded = bitmap.encodeJpegViaMozJpeg(outputFile, quality)
+            val encoded = bitmap.encodeJpegViaMozJpeg(outputFile, quality, metrics)
             if (!encoded) {
                 return@runCatching JpegCompressionResult(
                     succeeded = false,
@@ -121,7 +150,11 @@ private data class MozJpegAttempt(
         }
 }
 
-private suspend fun Bitmap.encodeJpegViaMozJpeg(outputFile: File, quality: Int): Boolean {
+private suspend fun Bitmap.encodeJpegViaMozJpeg(
+    outputFile: File,
+    quality: Int,
+    metrics: ProcessingMetricsRecorder
+): Boolean {
     if (!MozJpegNative.isAvailable) {
         logMozJpegEventTelemetry("MozJPEG native module unavailable; ${MozJpegNative.runtimeStatusMessage()}.")
         return false
@@ -140,18 +173,21 @@ private suspend fun Bitmap.encodeJpegViaMozJpeg(outputFile: File, quality: Int):
     var failureReason: String? = null
     for ((attemptIndex, attempt) in attempts.withIndex()) {
         currentCoroutineContext().ensureActive()
-        val encoded = runCatching {
-            ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { descriptor ->
-                MozJpegNative.compressBitmapToJpeg(
-                    bitmap = this,
-                    outputFileDescriptor = descriptor.fd,
-                    quality = quality,
-                    progressive = attempt.progressive,
-                    subsampling = attempt.subsampling,
-                    accurateDct = attempt.accurateDct
-                )
-            }
-        }.getOrDefault(false)
+        val encoded = metrics.measure(ProcessingStage.NativeEncode) {
+            runCatching {
+                ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { descriptor ->
+                    MozJpegNative.compressBitmapToJpeg(
+                        bitmap = this,
+                        outputFileDescriptor = descriptor.fd,
+                        quality = quality,
+                        progressive = attempt.progressive,
+                        subsampling = attempt.subsampling,
+                        accurateDct = attempt.accurateDct
+                    )
+                }
+            }.getOrDefault(false)
+        }
+        metrics.recordIo(ProcessingStage.NativeEncode, bytesWritten = outputFile.length())
         currentCoroutineContext().ensureActive()
 
         if (!encoded) {
@@ -159,14 +195,27 @@ private suspend fun Bitmap.encodeJpegViaMozJpeg(outputFile: File, quality: Int):
             continue
         }
 
+        var validationBytesRead = 0L
         val inspection = try {
-            outputFile.inspectCompleteJpeg(
-                expectedDimensions = JpegDimensions(width = width, height = height),
-                checkpoint = coroutineContext::ensureActive
-            )
+            metrics.measure(ProcessingStage.EncoderValidation) {
+                outputFile.inputStream().use { input ->
+                    val measured = MeasuredInputStream(input)
+                    try {
+                        inspectCompleteJpeg(
+                            input = measured,
+                            expectedDimensions = JpegDimensions(width = width, height = height),
+                            checkpoint = coroutineContext::ensureActive
+                        )
+                    } finally {
+                        validationBytesRead = measured.bytesRead
+                    }
+                }
+            }
         } catch (error: Exception) {
             failureReason = "${attempt.describe} could not be inspected: ${error.message}"
             continue
+        } finally {
+            metrics.recordIo(ProcessingStage.EncoderValidation, bytesRead = validationBytesRead)
         }
         if (inspection is JpegInspectionResult.Invalid) {
             failureReason = "${attempt.describe} failed structural validation: ${inspection.reason}"
@@ -179,11 +228,15 @@ private suspend fun Bitmap.encodeJpegViaMozJpeg(outputFile: File, quality: Int):
             progressive = attempt.progressive,
             structure = inspection.structure
         )
-        if (requiresVisualValidation &&
-            !outputFile.isVisuallyConsistentJpeg(width, height, this)
-        ) {
-            failureReason = "${attempt.describe} failed exceptional visual validation"
-            continue
+        if (requiresVisualValidation) {
+            val visuallyConsistent = metrics.measure(ProcessingStage.VisualValidation) {
+                outputFile.isVisuallyConsistentJpeg(width, height, this)
+            }
+            metrics.recordIo(ProcessingStage.VisualValidation, bytesRead = outputFile.length())
+            if (!visuallyConsistent) {
+                failureReason = "${attempt.describe} failed exceptional visual validation"
+                continue
+            }
         }
 
         if (attemptIndex != 0) {

@@ -1,6 +1,7 @@
 package com.example.slicer.home
 
 import android.net.Uri
+import android.os.Looper
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -23,10 +24,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class HomeViewModelTest {
@@ -192,6 +197,40 @@ class HomeViewModelTest {
         delay(100)
 
         assertEquals(listOf(second), viewModel.selectionState.value.selectedImages)
+    }
+
+    @Test
+    fun largeSelectionValidationStaysOffMainAndWithinFourWorkers() = runBlocking {
+        val uris = List(400) { index -> Uri.parse("content://selection/image-$index.jpg") }
+        val activeCalls = AtomicInteger(0)
+        val maximumActiveCalls = AtomicInteger(0)
+        val calledOnMain = AtomicBoolean(false)
+        val validator = ImageSelectionValidator {
+            if (Looper.myLooper() == Looper.getMainLooper()) calledOnMain.set(true)
+            val active = activeCalls.incrementAndGet()
+            maximumActiveCalls.getAndUpdate { current -> maxOf(current, active) }
+            try {
+                Thread.sleep(2L)
+                ImageSelectionOutcome.Supported
+            } finally {
+                activeCalls.decrementAndGet()
+            }
+        }
+        val viewModel = HomeViewModel(
+            application,
+            SavedStateHandle(),
+            validator
+        )
+
+        viewModel.validateImageSelection(uris)
+        val selection = withTimeout(15_000) {
+            viewModel.selectionState.first { state -> !state.isValidating && state.totalCount == uris.size }
+        }
+
+        assertEquals(uris, selection.selectedImages)
+        assertEquals(uris.size, selection.validatedCount)
+        assertFalse(calledOnMain.get())
+        assertTrue(maximumActiveCalls.get() in 1..4)
     }
 
     private companion object {

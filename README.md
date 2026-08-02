@@ -455,6 +455,18 @@ Phase 5 is complete when:
 - Evaluate bounded parallelism only if measurements show a safe benefit.
 - Enable and verify release optimization.
 
+The initial Phase 6 measurement baseline is implemented:
+
+- Worker items emit correlated stage timing, process CPU, sampled Java/native heap, memory-admission, and logical I/O metrics, with matching Perfetto sections.
+- Instrumentation covers 100, 400, and 1,000 persisted queue rows, 400-URI bounded validation, a 400-row lazy result list, configurable 100/500/1,000-image engine runs, and representative 12 MP and 24 MP pipelines.
+- The dedicated macrobenchmark module measures optimized cold startup and UI-state mapping with 400 results, plus frame and memory behavior while scrolling a 1,000-result data set.
+- Release and benchmark variants use R8 and resource optimization; the JNI class has an explicit verified keep rule.
+- Memory admission now separates Java-heap demand from native/process demand. The 24 MP and 12 MP low-RAM caps remain unchanged pending a wider device matrix.
+- Item retries remain capped at three attempts with exponential 10-second and 20-second delays; permission loss is permanent rather than retried.
+- Full-image processing remains single-flight. Initial 24 MP measurements do not show safe headroom for a second encoder, and current lifecycle cleanup intentionally assumes one active item.
+
+See [BENCHMARKING.md](BENCHMARKING.md) for commands, metric definitions, the initial device run, and tuning rules. Multi-device release baselines and regression thresholds remain the next Phase 6 step.
+
 ## Initial Engineering Priorities
 
 The first priorities are reliability and data safety, not parallel speed:

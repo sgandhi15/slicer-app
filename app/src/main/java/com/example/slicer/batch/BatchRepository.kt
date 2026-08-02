@@ -251,11 +251,13 @@ internal class BatchRepository(
     }
 
     suspend fun scheduleItemRetry(batchId: String, attemptCount: Int) {
-        val multiplier = 1L shl (attemptCount - 1).coerceIn(0, MAX_RETRY_DELAY_EXPONENT)
         enqueue(
             batchId = batchId,
             policy = ExistingWorkPolicy.APPEND_OR_REPLACE,
-            initialDelayMillis = WorkRequest.MIN_BACKOFF_MILLIS * multiplier
+            initialDelayMillis = itemRetryDelayMillis(
+                attemptCount = attemptCount,
+                baseDelayMillis = WorkRequest.MIN_BACKOFF_MILLIS
+            )
         )
     }
 
@@ -381,7 +383,6 @@ internal class BatchRepository(
     private companion object {
         const val MAX_PERSISTED_SOURCES_PER_BATCH = 400
         const val PERSISTED_URI_GRANT_BUDGET = 480
-        const val MAX_RETRY_DELAY_EXPONENT = 4
     }
 
 }

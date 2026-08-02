@@ -183,8 +183,8 @@ class SlicerComponentsUiTest {
     }
 
     @Test
-    fun resultListScrollsToAStableItemId() {
-        val results = List(50) { index ->
+    fun fourHundredResultListScrollsToAStableItemId() {
+        val results = List(400) { index ->
             BatchFileResult(
                 id = "result-$index",
                 inputUri = Uri.parse("content://com.example.slicer/source/$index.jpg"),
@@ -199,18 +199,18 @@ class SlicerComponentsUiTest {
             SlicerTheme {
                 BatchResultsPanel(
                     results = results,
-                    summary = ProcessingProgress(total = 50, completed = 50, compressedCount = 50),
-                    totalInputBytes = 60_000L,
-                    totalOutputBytes = 30_000L,
-                    totalSavedBytes = 30_000L,
+                    summary = ProcessingProgress(total = 400, completed = 400, compressedCount = 400),
+                    totalInputBytes = 480_000L,
+                    totalOutputBytes = 240_000L,
+                    totalSavedBytes = 240_000L,
                     onResultClick = {}
                 )
             }
         }
 
         composeTestRule.onNodeWithTag("slicer-result-list")
-            .performScrollToNode(hasTestTag("slicer-result-row-result-49"))
-        composeTestRule.onNodeWithTag("slicer-result-row-result-49").assertIsDisplayed()
+            .performScrollToNode(hasTestTag("slicer-result-row-result-399"))
+        composeTestRule.onNodeWithTag("slicer-result-row-result-399").assertIsDisplayed()
     }
 
     @Test

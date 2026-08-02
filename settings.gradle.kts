@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Slicer"
 include(":app")
+include(":benchmark")

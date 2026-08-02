@@ -417,7 +417,7 @@ internal abstract class BatchDao {
 
     @Transaction
     open suspend fun claimNextItem(batchId: String): BatchItemEntity? {
-        if (getProcessingItems(batchId).isNotEmpty()) return null
+        if (getProcessingItems(batchId).size >= MAX_CONCURRENT_IMAGE_PROCESSORS) return null
         while (true) {
             val item = getNextQueuedItem(batchId) ?: return null
             if (markProcessing(item.id) == 1) {

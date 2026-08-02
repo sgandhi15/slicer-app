@@ -2,6 +2,7 @@ package com.example.slicer.home
 
 import android.app.Application
 import android.net.Uri
+import android.os.Trace
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -98,13 +99,13 @@ internal class HomeViewModel internal constructor(
     application: Application,
     private val savedStateHandle: SavedStateHandle,
     private val imageSelectionValidator: ImageSelectionValidator,
-    private val validationDispatcher: CoroutineDispatcher
+    private val validationDispatcher: CoroutineDispatcher =
+        Dispatchers.IO.limitedParallelism(MAX_SELECTION_VALIDATION_CONCURRENCY)
 ) : AndroidViewModel(application) {
     constructor(application: Application, savedStateHandle: SavedStateHandle) : this(
         application = application,
         savedStateHandle = savedStateHandle,
-        imageSelectionValidator = ContentResolverImageSelectionValidator(application),
-        validationDispatcher = Dispatchers.IO.limitedParallelism(MAX_SELECTION_VALIDATION_CONCURRENCY)
+        imageSelectionValidator = ContentResolverImageSelectionValidator(application)
     )
 
     private val repository = (application as SlicerApplication).batchRepository
@@ -304,8 +305,8 @@ private fun BatchEntity?.toUiState(
     items: List<BatchItemEntity>,
     isStarting: Boolean,
     error: String?
-): DurableBatchUiState {
-    if (this == null) return DurableBatchUiState(isStarting = isStarting, error = error)
+): DurableBatchUiState = traceUiStateMapping {
+    if (this == null) return@traceUiStateMapping DurableBatchUiState(isStarting = isStarting, error = error)
 
     val currentItem = items.firstOrNull { it.state == BatchItemState.Processing }
     val results = items.filter { it.state.isTerminal }.map { it.toResult() }
@@ -345,6 +346,17 @@ private fun BatchEntity?.toUiState(
         error = error
     )
 }
+
+private inline fun <T> traceUiStateMapping(block: () -> T): T {
+    Trace.beginSection(UI_STATE_MAPPING_TRACE)
+    return try {
+        block()
+    } finally {
+        Trace.endSection()
+    }
+}
+
+private const val UI_STATE_MAPPING_TRACE = "Slicer UI state"
 
 private fun BatchItemEntity.toResult(): BatchFileResult = BatchFileResult(
     id = id,

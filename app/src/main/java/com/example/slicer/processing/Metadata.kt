@@ -1,6 +1,9 @@
 package com.example.slicer.processing
 
 import com.example.slicer.core.LOG_TAG
+import com.example.slicer.telemetry.MeasuredInputStream
+import com.example.slicer.telemetry.ProcessingMetricsRecorder
+import com.example.slicer.telemetry.ProcessingStage
 
 import android.content.Context
 import android.net.Uri
@@ -21,81 +24,115 @@ internal suspend fun Context.preserveJpegMetadata(
     sourceUri: Uri,
     encodedFile: File,
     expectedDimensions: JpegDimensions,
-    maximumOutputBytes: Long? = null
-): Boolean = withContext(Dispatchers.IO) {
-    val replacement = File(encodedFile.parentFile, "${encodedFile.name}.metadata")
-    if (replacement.exists() && !replacement.delete()) return@withContext false
-    val coroutineContext = currentCoroutineContext()
-    val hardOutputLimit = saturatedAdd(encodedFile.length(), MAX_STREAMED_METADATA_BYTES)
-    val outputLimit = minOf(
-        maximumOutputBytes?.takeIf { it > 0L } ?: Long.MAX_VALUE,
-        hardOutputLimit
-    )
+    maximumOutputBytes: Long? = null,
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
+): Boolean = metrics.measure(ProcessingStage.Metadata) {
+    withContext(Dispatchers.IO) {
+        val replacement = File(encodedFile.parentFile, "${encodedFile.name}.metadata")
+        if (replacement.exists() && !replacement.delete()) return@withContext false
+        val coroutineContext = currentCoroutineContext()
+        val hardOutputLimit = saturatedAdd(encodedFile.length(), MAX_STREAMED_METADATA_BYTES)
+        val outputLimit = minOf(
+            maximumOutputBytes?.takeIf { it > 0L } ?: Long.MAX_VALUE,
+            hardOutputLimit
+        )
 
-    try {
-        var outputBytes = 0L
-        val rewriteResult = FileOutputStream(replacement).use { fileOutput ->
-            val boundedOutput = BoundedCountingOutputStream(
-                delegate = fileOutput,
-                maximumBytes = outputLimit
-            )
-            val sourceInput = contentResolver.openInputStream(sourceUri)
-                ?: return@withContext false
-            val result = sourceInput.use { source ->
-                encodedFile.inputStream().use { encoded ->
-                    rewriteJpegWithSourceMetadata(
-                        source = source,
-                        encoded = encoded,
-                        output = boundedOutput,
+        var sourceBytesRead = 0L
+        var encodedBytesRead = 0L
+        var validationBytesRead = 0L
+        var streamedOutputBytes = 0L
+        try {
+            var outputBytes = 0L
+            val rewriteResult = FileOutputStream(replacement).use { fileOutput ->
+                val boundedOutput = BoundedCountingOutputStream(
+                    delegate = fileOutput,
+                    maximumBytes = outputLimit
+                )
+                val sourceInput = contentResolver.openInputStream(sourceUri)
+                    ?: return@withContext false
+                val result = sourceInput.use { source ->
+                    val measuredSource = MeasuredInputStream(source)
+                    try {
+                        encodedFile.inputStream().use { encoded ->
+                            val measuredEncoded = MeasuredInputStream(encoded)
+                            try {
+                                rewriteJpegWithSourceMetadata(
+                                    source = measuredSource,
+                                    encoded = measuredEncoded,
+                                    output = boundedOutput,
+                                    expectedDimensions = expectedDimensions,
+                                    checkpoint = coroutineContext::ensureActive
+                                )
+                            } finally {
+                                encodedBytesRead = measuredEncoded.bytesRead
+                            }
+                        }
+                    } finally {
+                        sourceBytesRead = measuredSource.bytesRead
+                        streamedOutputBytes = boundedOutput.bytesWritten
+                    }
+                }
+                if (result is MetadataRewriteResult.Rewritten) {
+                    boundedOutput.flush()
+                    fileOutput.fd.sync()
+                    outputBytes = boundedOutput.bytesWritten
+                }
+                result
+            }
+
+            when (rewriteResult) {
+                MetadataRewriteResult.NoMetadata -> return@withContext true
+                is MetadataRewriteResult.Invalid -> {
+                    Log.w(LOG_TAG, "Metadata streaming failed: ${rewriteResult.reason}")
+                    return@withContext false
+                }
+
+                is MetadataRewriteResult.Rewritten -> Unit
+            }
+
+            if (outputBytes <= 0L || replacement.length() != outputBytes) return@withContext false
+            val inspection = replacement.inputStream().use { input ->
+                val measured = MeasuredInputStream(input)
+                try {
+                    inspectCompleteJpeg(
+                        input = measured,
                         expectedDimensions = expectedDimensions,
                         checkpoint = coroutineContext::ensureActive
                     )
+                } finally {
+                    validationBytesRead = measured.bytesRead
                 }
             }
-            if (result is MetadataRewriteResult.Rewritten) {
-                boundedOutput.flush()
-                fileOutput.fd.sync()
-                outputBytes = boundedOutput.bytesWritten
-            }
-            result
-        }
-
-        when (rewriteResult) {
-            MetadataRewriteResult.NoMetadata -> return@withContext true
-            is MetadataRewriteResult.Invalid -> {
-                Log.w(LOG_TAG, "Metadata streaming failed: ${rewriteResult.reason}")
+            if (inspection is JpegInspectionResult.Invalid) {
+                Log.w(LOG_TAG, "Metadata output validation failed: ${inspection.reason}")
                 return@withContext false
             }
 
-            is MetadataRewriteResult.Rewritten -> Unit
-        }
-
-        if (outputBytes <= 0L || replacement.length() != outputBytes) return@withContext false
-        val inspection = replacement.inspectCompleteJpeg(
-            expectedDimensions = expectedDimensions,
-            checkpoint = coroutineContext::ensureActive
-        )
-        if (inspection is JpegInspectionResult.Invalid) {
-            Log.w(LOG_TAG, "Metadata output validation failed: ${inspection.reason}")
-            return@withContext false
-        }
-
-        coroutineContext.ensureActive()
-        Files.move(
-            replacement.toPath(),
-            encodedFile.toPath(),
-            StandardCopyOption.ATOMIC_MOVE,
-            StandardCopyOption.REPLACE_EXISTING
-        )
-        encodedFile.isFile && encodedFile.length() == outputBytes
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (error: Exception) {
-        Log.w(LOG_TAG, "Could not preserve JPEG metadata safely.", error)
-        false
-    } finally {
-        if (replacement.exists() && !replacement.delete()) {
-            Log.w(LOG_TAG, "Could not remove metadata replacement '${replacement.name}'.")
+            coroutineContext.ensureActive()
+            Files.move(
+                replacement.toPath(),
+                encodedFile.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING
+            )
+            encodedFile.isFile && encodedFile.length() == outputBytes
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(LOG_TAG, "Could not preserve JPEG metadata safely.", error)
+            false
+        } finally {
+            metrics.recordIo(
+                stage = ProcessingStage.Metadata,
+                bytesRead = saturatedAdd(
+                    saturatedAdd(sourceBytesRead, encodedBytesRead),
+                    validationBytesRead
+                ),
+                bytesWritten = streamedOutputBytes
+            )
+            if (replacement.exists() && !replacement.delete()) {
+                Log.w(LOG_TAG, "Could not remove metadata replacement '${replacement.name}'.")
+            }
         }
     }
 }

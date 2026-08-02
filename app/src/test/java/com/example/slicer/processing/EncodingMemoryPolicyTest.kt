@@ -17,17 +17,18 @@ class EncodingMemoryPolicyTest {
 
         assertTrue(decision.canEncode)
         assertEquals(192_000_000L, decision.estimatedPeakBytes)
+        assertEquals(48_000_000L, decision.estimatedAppHeapBytes)
         assertNull(decision.rejection)
     }
 
     @Test
-    fun rejectsImageWhenAppHeadroomIsBelowEstimatedPeakAndReserve() {
-        val estimatedPeak = 4_000L * 3_000L * ENCODING_ESTIMATED_BYTES_PER_PIXEL
+    fun rejectsImageWhenAppHeadroomIsBelowAppEstimateAndReserve() {
+        val estimatedAppHeap = 4_000L * 3_000L * ENCODING_ESTIMATED_APP_BYTES_PER_PIXEL
         val decision = evaluateEncodingMemory(
             width = 4_000,
             height = 3_000,
             snapshot = ampleMemory().copy(
-                appAvailableBytes = estimatedPeak + ENCODING_APP_RESERVE_BYTES - 1L
+                appAvailableBytes = estimatedAppHeap + ENCODING_APP_RESERVE_BYTES - 1L
             )
         )
 
@@ -77,6 +78,40 @@ class EncodingMemoryPolicyTest {
 
         assertTrue(regularDevice.canEncode)
         assertFalse(lowRamDevice.canEncode)
+        assertEquals(EncodingMemoryRejection.ImageTooLarge, lowRamDevice.rejection)
+    }
+
+    @Test
+    fun allowsExactRegularAndLowRamPixelLimits() {
+        val regularDevice = evaluateEncodingMemory(
+            width = 6_000,
+            height = 4_000,
+            snapshot = ampleMemory()
+        )
+        val lowRamDevice = evaluateEncodingMemory(
+            width = 4_000,
+            height = 3_000,
+            snapshot = ampleMemory().copy(isLowRamDevice = true)
+        )
+
+        assertTrue(regularDevice.canEncode)
+        assertTrue(lowRamDevice.canEncode)
+    }
+
+    @Test
+    fun rejectsOnePixelBeyondRegularAndLowRamLimits() {
+        val regularDevice = evaluateEncodingMemory(
+            width = 24_000_001,
+            height = 1,
+            snapshot = ampleMemory()
+        )
+        val lowRamDevice = evaluateEncodingMemory(
+            width = 12_000_001,
+            height = 1,
+            snapshot = ampleMemory().copy(isLowRamDevice = true)
+        )
+
+        assertEquals(EncodingMemoryRejection.ImageTooLarge, regularDevice.rejection)
         assertEquals(EncodingMemoryRejection.ImageTooLarge, lowRamDevice.rejection)
     }
 

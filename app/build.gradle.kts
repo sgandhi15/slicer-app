@@ -32,8 +32,15 @@ android {
     buildTypes {
         release {
             optimization {
-                enable = false
+                enable = true
             }
+        }
+        create("benchmark") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".benchmark"
+            signingConfig = signingConfigs.getByName("debug")
+            isProfileable = true
+            matchingFallbacks += listOf("release")
         }
     }
     externalNativeBuild {

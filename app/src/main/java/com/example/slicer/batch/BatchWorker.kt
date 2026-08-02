@@ -31,6 +31,8 @@ import com.example.slicer.storage.resolveDisplayName
 import com.example.slicer.storage.sanitizeOutputFileName
 import com.example.slicer.storage.uniqueOutputName
 import com.example.slicer.storage.withOutputLifecycleLock
+import com.example.slicer.telemetry.ProcessingMetricsRecorder
+import com.example.slicer.telemetry.ProcessingStage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -148,6 +150,8 @@ internal class BatchWorker(
             val inputName = checkNotNull(item.inputName) { "Queued item is missing its input name." }
             val outputName = checkNotNull(item.outputName) { "Queued item is missing its output name." }
             setForeground(createForegroundInfo(batch, inputName))
+            val metrics = ProcessingMetricsRecorder.create(batchId, item.id, item.attemptCount)
+            var metricsOutcome = "Failed"
 
             try {
                 val tempFile = applicationContext.createOutputTempFile(item.id)
@@ -156,24 +160,32 @@ internal class BatchWorker(
                     inputUri = item.sourceUri.toUri(),
                     tempFile = tempFile,
                     quality = batch.quality,
-                    inputBytes = item.inputBytes
+                    inputBytes = item.inputBytes,
+                    metrics = metrics
                 )
-                val published = applicationContext.publishPreparedOutput(
-                    tempFile = tempFile,
-                    outputFolderUri = batch.destinationUri.toUri(),
-                    outputName = outputName,
-                    itemId = item.id,
-                    onOutputCreated = { outputUri, actualOutputName ->
-                        check(
-                            dao.recordOutputUri(
-                                itemId = item.id,
-                                outputUri = outputUri.toString(),
-                                actualOutputName = actualOutputName
-                            ) == 1
-                        ) {
-                            "Could not journal the provisional output."
+                val published = metrics.measure(ProcessingStage.Publication) {
+                    applicationContext.publishPreparedOutput(
+                        tempFile = tempFile,
+                        outputFolderUri = batch.destinationUri.toUri(),
+                        outputName = outputName,
+                        itemId = item.id,
+                        onOutputCreated = { outputUri, actualOutputName ->
+                            check(
+                                dao.recordOutputUri(
+                                    itemId = item.id,
+                                    outputUri = outputUri.toString(),
+                                    actualOutputName = actualOutputName
+                                ) == 1
+                            ) {
+                                "Could not journal the provisional output."
+                            }
                         }
-                    }
+                    )
+                }
+                metrics.recordIo(
+                    stage = ProcessingStage.Publication,
+                    bytesRead = tempFile.length(),
+                    bytesWritten = published.outputBytes
                 )
                 check(
                     dao.completeItem(
@@ -192,10 +204,15 @@ internal class BatchWorker(
                 if (!applicationContext.deleteOutputTempFile(item.id)) {
                     Log.w(LOG_TAG, "Could not remove temporary output for item ${item.id}.")
                 }
+                metricsOutcome = prepared.decision.name
             } catch (cancelled: CancellationException) {
+                metricsOutcome = "Interrupted"
                 throw cancelled
             } catch (error: Exception) {
+                metricsOutcome = if (error.isRetryableItemFailure()) "RetryableFailure" else "PermanentFailure"
                 handleItemFailure(item, error)
+            } finally {
+                metrics.finish(metricsOutcome)
             }
 
             val updated = dao.getBatch(batchId) ?: return
@@ -227,7 +244,7 @@ internal class BatchWorker(
         if (current.state != BatchItemState.Processing) return
 
         val message = error.message ?: "Image processing failed."
-        if (error.isRetryableItemError()) {
+        if (error.isRetryableItemFailure()) {
             dao.requeueOrFailProcessingItem(
                 itemId = current.id,
                 batchId = current.batchId,
@@ -291,10 +308,6 @@ internal class BatchWorker(
         val message = "Waiting to remove an incomplete output before retrying."
         dao.markForWorkerRetry(batchId, message)
         dao.recordActiveError(batchId, message)
-    }
-
-    private fun Exception.isRetryableItemError(): Boolean {
-        return this is IOException || this is SecurityException
     }
 
     private suspend fun prepareQueuedItems(batch: BatchEntity): Boolean {
@@ -420,7 +433,5 @@ internal class BatchWorker(
         const val BATCH_ID_KEY = "batch_id"
         private const val NOTIFICATION_CHANNEL_ID = "slicer_processing"
         private const val NOTIFICATION_ID = 1001
-        private const val MAX_WORKER_RETRIES = 2
-        private const val MAX_ITEM_ATTEMPTS = MAX_WORKER_RETRIES + 1
     }
 }

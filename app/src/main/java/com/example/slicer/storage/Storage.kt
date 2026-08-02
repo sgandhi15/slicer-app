@@ -14,6 +14,7 @@ import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
 import com.example.slicer.core.PREFS_QUALITY_KEY
 import com.example.slicer.core.PREFS_WELCOME_SCREEN_SEEN_KEY
+import com.example.slicer.telemetry.MeasuredInputStream
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -322,13 +323,21 @@ internal fun Context.resolveContentSize(uri: Uri): Long {
     }.getOrNull() ?: -1L
 }
 
-internal fun Context.loadBitmapForCompression(uri: Uri): Bitmap? {
+internal fun Context.loadBitmapForCompression(
+    uri: Uri,
+    onBytesRead: (Long) -> Unit = {}
+): Bitmap? {
     return runCatching {
         contentResolver.openInputStream(uri)?.use { input ->
+            val measured = MeasuredInputStream(input)
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            BitmapFactory.decodeStream(input, null, options)
+            try {
+                BitmapFactory.decodeStream(measured, null, options)
+            } finally {
+                onBytesRead(measured.bytesRead)
+            }
         }
     }.getOrNull()
 }

@@ -2,11 +2,12 @@ package com.example.slicer.processing
 
 import android.app.ActivityManager
 import android.content.Context
-import android.os.Debug
 import com.example.slicer.core.MAX_COMPRESSION_PIXELS
 
 // Includes RGBA pixels and the worst-case coefficient buffers used by 4:4:4 retries.
 internal const val ENCODING_ESTIMATED_BYTES_PER_PIXEL = 16L
+// Native bitmap and codec allocations are guarded by system headroom, not charged to the Java heap twice.
+internal const val ENCODING_ESTIMATED_APP_BYTES_PER_PIXEL = 4L
 internal const val ENCODING_APP_RESERVE_BYTES = 64L * 1024L * 1024L
 internal const val ENCODING_SYSTEM_RESERVE_BYTES = 256L * 1024L * 1024L
 private const val LOW_RAM_MAX_COMPRESSION_PIXELS = 12_000_000L
@@ -31,6 +32,7 @@ internal data class EncodingMemorySnapshot(
 internal data class EncodingMemoryDecision(
     val canEncode: Boolean,
     val estimatedPeakBytes: Long = 0L,
+    val estimatedAppHeapBytes: Long = 0L,
     val rejection: EncodingMemoryRejection? = null
 )
 
@@ -54,19 +56,22 @@ internal fun evaluateEncodingMemory(
     }
 
     val estimatedPeakBytes = pixels * ENCODING_ESTIMATED_BYTES_PER_PIXEL
+    val estimatedAppHeapBytes = pixels * ENCODING_ESTIMATED_APP_BYTES_PER_PIXEL
     if (snapshot.isSystemLowMemory) {
         return EncodingMemoryDecision(
             canEncode = false,
             estimatedPeakBytes = estimatedPeakBytes,
+            estimatedAppHeapBytes = estimatedAppHeapBytes,
             rejection = EncodingMemoryRejection.SystemLowMemory
         )
     }
 
-    val requiredAppBytes = saturatedAdd(estimatedPeakBytes, ENCODING_APP_RESERVE_BYTES)
+    val requiredAppBytes = saturatedAdd(estimatedAppHeapBytes, ENCODING_APP_RESERVE_BYTES)
     if (snapshot.appAvailableBytes < requiredAppBytes) {
         return EncodingMemoryDecision(
             canEncode = false,
             estimatedPeakBytes = estimatedPeakBytes,
+            estimatedAppHeapBytes = estimatedAppHeapBytes,
             rejection = EncodingMemoryRejection.InsufficientAppMemory
         )
     }
@@ -81,11 +86,16 @@ internal fun evaluateEncodingMemory(
         return EncodingMemoryDecision(
             canEncode = false,
             estimatedPeakBytes = estimatedPeakBytes,
+            estimatedAppHeapBytes = estimatedAppHeapBytes,
             rejection = EncodingMemoryRejection.InsufficientSystemMemory
         )
     }
 
-    return EncodingMemoryDecision(canEncode = true, estimatedPeakBytes = estimatedPeakBytes)
+    return EncodingMemoryDecision(
+        canEncode = true,
+        estimatedPeakBytes = estimatedPeakBytes,
+        estimatedAppHeapBytes = estimatedAppHeapBytes
+    )
 }
 
 internal fun Context.evaluateEncodingMemory(width: Int, height: Int): EncodingMemoryDecision {
@@ -97,16 +107,14 @@ internal fun Context.evaluateEncodingMemory(width: Int, height: Int): EncodingMe
     val memoryInfo = ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
     val runtime = Runtime.getRuntime()
     val javaHeapUsed = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
-    val nativeHeapUsed = Debug.getNativeHeapAllocatedSize().coerceAtLeast(0L)
     val configuredHeapLimit = activityManager.memoryClass.toLong() * BYTES_PER_MEBIBYTE
     val appHeapLimit = minOf(runtime.maxMemory(), configuredHeapLimit)
-    val appUsed = saturatedAdd(javaHeapUsed, nativeHeapUsed)
 
     return evaluateEncodingMemory(
         width = width,
         height = height,
         snapshot = EncodingMemorySnapshot(
-            appAvailableBytes = (appHeapLimit - appUsed).coerceAtLeast(0L),
+            appAvailableBytes = (appHeapLimit - javaHeapUsed).coerceAtLeast(0L),
             systemAvailableBytes = memoryInfo.availMem.coerceAtLeast(0L),
             systemLowMemoryThresholdBytes = memoryInfo.threshold.coerceAtLeast(0L),
             isSystemLowMemory = memoryInfo.lowMemory,
