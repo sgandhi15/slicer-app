@@ -1,5 +1,7 @@
 package com.example.slicer.ui.theme
 
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -8,9 +10,9 @@ private val LightColorScheme = lightColorScheme(
     primary = SlicerPrimary,
     onPrimary = SlicerOnPrimary,
     secondary = SlicerSecondary,
-    onSecondary = SlicerOnPrimary,
+    onSecondary = SlicerSurface,
     tertiary = SlicerTertiary,
-    onTertiary = SlicerOnPrimary,
+    onTertiary = SlicerSurface,
     background = SlicerBackground,
     onBackground = SlicerOnSurface,
     surface = SlicerSurface,
@@ -18,6 +20,8 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = SlicerSurfaceVariant,
     onSurfaceVariant = SlicerOnSurfaceVariant,
     outline = SlicerOutline,
+    outlineVariant = SlicerOutline,
+    surfaceTint = SlicerSurface,
     error = SlicerError,
     onError = SlicerOnError,
     primaryContainer = SlicerPrimaryContainer,
@@ -35,7 +39,8 @@ fun SlicerTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = colorScheme,
         typography = SlicerTypography,
-        shapes = SlicerShapes,
-        content = content
-    )
+        shapes = SlicerShapes
+    ) {
+        CompositionLocalProvider(LocalContentColor provides colorScheme.onSurface, content = content)
+    }
 }

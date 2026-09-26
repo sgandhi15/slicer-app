@@ -9,6 +9,9 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import com.example.slicer.ui.theme.hardShadow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,14 +30,12 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.example.slicer.ui.theme.SlicerTextButton as TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,6 +79,7 @@ internal fun BatchSetupContent(
                 .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Text("SMALLER FILES.\nMORE ROOM.", style = MaterialTheme.typography.headlineLarge)
             EmptyImagePicker(
                 enabled = controlsEnabled,
                 onClick = onSelectImages,
@@ -163,12 +165,13 @@ private fun EmptyImagePicker(
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            .hardShadow(MaterialTheme.shapes.medium)
             .testTag("batch-image-picker"),
         enabled = enabled,
         onClick = onClick,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primary,
+        border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline)
     ) {
         Column(
             modifier = Modifier
@@ -178,19 +181,20 @@ private fun EmptyImagePicker(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "+",
+                text = "＋",
                 style = MaterialTheme.typography.displayMedium,
-                fontWeight = FontWeight.Light,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = "Select images",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = "Choose one or more JPEG files",
+                textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -255,6 +259,7 @@ private fun SelectedImageTile(
             .padding(horizontal = 4.dp)
             .fillMaxWidth()
             .aspectRatio(1f)
+            .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.small)
             .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .testTag("selected-image-${uri}")
@@ -272,7 +277,7 @@ private fun SelectedImageTile(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(8.dp)
-                .size(30.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.error)
                 .clickable(enabled = enabled, onClick = onRemove)
@@ -344,10 +349,11 @@ internal fun DestinationSection(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .hardShadow()
                 .clickable(enabled = controlsEnabled, onClick = onSelectOutput),
             shape = MaterialTheme.shapes.small,
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline)
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),
@@ -364,7 +370,7 @@ internal fun DestinationSection(
                     Text(
                         text = "Change destination",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 if (!isDefaultOutputFolder) {
@@ -385,11 +391,7 @@ private fun DestinationResetButton(enabled: Boolean, onClick: () -> Unit) {
         enabled = enabled,
         modifier = Modifier.semantics { contentDescription = "Reset to default destination" }
     ) {
-        val color = if (enabled) {
-            MaterialTheme.colorScheme.onSurfaceVariant
-        } else {
-            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-        }
+        val color = MaterialTheme.colorScheme.onSurface
         Canvas(modifier = Modifier.size(22.dp)) {
             val resetArrow = Path().apply {
                 moveTo(size.width * 0.82f, size.height * 0.25f)

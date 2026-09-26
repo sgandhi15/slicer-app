@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.slicer.ui.theme.hardShadow
 
 @Composable
 internal fun SectionCard(
@@ -22,10 +23,10 @@ internal fun SectionCard(
     content: @Composable () -> Unit
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().hardShadow(MaterialTheme.shapes.medium),
         color = MaterialTheme.colorScheme.surface,
         shape = MaterialTheme.shapes.medium,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.24f))
+        border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline)
     ) {
         Column(
             modifier = Modifier

@@ -4,6 +4,9 @@ import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.QUALITY_PRESETS
 
+import com.example.slicer.ui.theme.hardShadow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,7 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import com.example.slicer.ui.theme.SlicerOutlinedButton as OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -57,7 +60,8 @@ internal fun QualityStepContent(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(70.dp)
+                        .heightIn(min = 76.dp)
+                        .hardShadow()
                         .testTag("quality-preset-${preset.label.lowercase()}")
                         .clickable(enabled = controlsEnabled) {
                             showCustomQuality = false
@@ -65,17 +69,13 @@ internal fun QualityStepContent(
                         },
                     shape = MaterialTheme.shapes.small,
                     color = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer
+                        MaterialTheme.colorScheme.secondaryContainer
                     } else {
                         MaterialTheme.colorScheme.surface
                     },
                     border = BorderStroke(
-                        width = 1.dp,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.outline
-                        }
+                        width = 2.dp,
+                        color = MaterialTheme.colorScheme.outline
                     )
                 ) {
                     Row(
@@ -91,7 +91,7 @@ internal fun QualityStepContent(
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                    MaterialTheme.colorScheme.onSecondaryContainer
                                 } else {
                                     MaterialTheme.colorScheme.onSurface
                                 }
@@ -104,7 +104,7 @@ internal fun QualityStepContent(
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                    MaterialTheme.colorScheme.onSecondaryContainer
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
                                 }
@@ -113,6 +113,12 @@ internal fun QualityStepContent(
 
                         RadioButton(
                             selected = isSelected,
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = MaterialTheme.colorScheme.onSurface,
+                                unselectedColor = MaterialTheme.colorScheme.onSurface,
+                                disabledSelectedColor = MaterialTheme.colorScheme.onSurface,
+                                disabledUnselectedColor = MaterialTheme.colorScheme.onSurface
+                            ),
                             onClick = null,
                             enabled = controlsEnabled
                         )

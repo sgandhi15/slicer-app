@@ -6,6 +6,10 @@ import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.shared.formatByteCount
 import com.example.slicer.shared.formatSavedPercentage
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
+import com.example.slicer.ui.theme.hardShadow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.clickable
@@ -16,14 +20,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.example.slicer.ui.theme.SlicerTextButton as TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,7 +71,10 @@ internal fun ProcessingPanel(
             color = MaterialTheme.colorScheme.onSurface
         )
         LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(16.dp)
+                .clip(MaterialTheme.shapes.small)
+                .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.small),
+            trackColor = MaterialTheme.colorScheme.secondaryContainer,
             progress = { ratio }
         )
 
@@ -179,7 +186,7 @@ internal fun BatchResultsPanel(
         item(key = "run-summary") {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Run summary",
+                    text = "THAT’S LIGHTER.",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -187,20 +194,22 @@ internal fun BatchResultsPanel(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().hardShadow(MaterialTheme.shapes.medium)
+                        .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.medium)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.shapes.medium).padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         text = "${formatByteCount(totalSavedBytes)} saved",
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
 
                     if (totalSavedPercent != null) {
                         Text(
-                            text = "$totalSavedPercent smaller",
+                            text = totalSavedPercent,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -333,7 +342,7 @@ private fun BatchResultRow(
         result.decision != ProcessingDecision.Cancelled && result.outputUri != null
 
     val decisionColor = when (result.decision) {
-        ProcessingDecision.Compressed -> MaterialTheme.colorScheme.primary
+        ProcessingDecision.Compressed -> MaterialTheme.colorScheme.onSurface
         ProcessingDecision.CopiedOriginal -> MaterialTheme.colorScheme.secondary
         ProcessingDecision.Failed -> MaterialTheme.colorScheme.error
         ProcessingDecision.Cancelled -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -392,8 +401,13 @@ private fun BatchResultRow(
         }
 
         Surface(
-            color = decisionColor.copy(alpha = 0.15f),
-            shape = RoundedCornerShape(0.dp)
+            border = BorderStroke(1.dp, decisionColor),
+            color = when (result.decision) {
+                ProcessingDecision.Compressed -> MaterialTheme.colorScheme.secondaryContainer
+                ProcessingDecision.Failed -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            },
+            shape = MaterialTheme.shapes.small
         ) {
             Text(
                 text = decisionLabel,
