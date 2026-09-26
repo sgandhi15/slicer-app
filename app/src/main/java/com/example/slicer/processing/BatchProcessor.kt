@@ -3,6 +3,7 @@ package com.example.slicer.processing
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.core.RetryableFailure
 import com.example.slicer.storage.copyUriContent
 import com.example.slicer.telemetry.MeasuredInputStream
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
@@ -27,6 +28,8 @@ internal data class PreparedBatchOutput(
 )
 
 internal class InvalidJpegDataException(message: String) : Exception(message)
+internal class SourceChangedException(message: String) : IOException(message), RetryableFailure
+internal class ValidationResourceException(message: String) : IOException(message), RetryableFailure
 
 internal suspend fun processBatchItem(
     context: Context,
@@ -34,6 +37,8 @@ internal suspend fun processBatchItem(
     tempFile: File,
     quality: Int,
     inputBytes: Long,
+    knownDimensions: JpegDimensions? = null,
+    onDimensionsRead: suspend (JpegDimensions) -> Unit = {},
     metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
 ): PreparedBatchOutput = withContext(Dispatchers.IO) {
     val result = processSingleImage(
@@ -42,6 +47,8 @@ internal suspend fun processBatchItem(
         outputFile = tempFile,
         quality = quality,
         inputBytes = inputBytes,
+        knownDimensions = knownDimensions,
+        onDimensionsRead = onDimensionsRead,
         metrics = metrics
     )
     val actualBytes = tempFile.length()
@@ -76,6 +83,50 @@ internal suspend fun processBatchItem(
         }
         throw InvalidJpegDataException(message)
     }
+    if (result.decision == ProcessingDecision.CopiedOriginal) {
+        inspection as JpegInspectionResult.Valid
+        coroutineContext.ensureActive()
+        when (
+            tempFile.validateJpegViaMozJpeg(
+                expectedDimensions = result.expectedDimensions ?: inspection.structure.dimensions,
+                maximumWorkingBytes = context.jpegValidationWorkingMemoryLimitBytes()
+            )
+        ) {
+            NativeJpegValidationResult.Valid -> Unit
+            NativeJpegValidationResult.InvalidData -> throw InvalidJpegDataException(
+                "Prepared original could not be fully decoded as JPEG data."
+            )
+            NativeJpegValidationResult.IoFailure -> throw IOException(
+                "Prepared original could not be read for final validation."
+            )
+            NativeJpegValidationResult.ResourceLimit -> {
+                throw ValidationResourceException(
+                    "Not enough memory was available to validate the original safely."
+                )
+            }
+            NativeJpegValidationResult.Unavailable -> {
+                val dimensions = result.expectedDimensions ?: inspection.structure.dimensions
+                if (!context.evaluateEncodingMemory(dimensions.width, dimensions.height).canEncode) {
+                    throw ValidationResourceException(
+                        "Not enough memory was available to validate the original safely."
+                    )
+                }
+                when (tempFile.validateJpegWithPlatformDecoder(dimensions)) {
+                    PlatformJpegValidationResult.Valid -> Unit
+                    PlatformJpegValidationResult.InvalidData -> throw InvalidJpegDataException(
+                        "Prepared original could not be decoded by the platform JPEG decoder."
+                    )
+                    PlatformJpegValidationResult.IoFailure -> throw IOException(
+                        "Prepared original could not be read by the platform JPEG decoder."
+                    )
+                    PlatformJpegValidationResult.ResourceLimit -> throw ValidationResourceException(
+                        "Not enough memory was available to validate the original safely."
+                    )
+                }
+            }
+        }
+        coroutineContext.ensureActive()
+    }
     result.copy(outputBytes = actualBytes)
 }
 
@@ -85,15 +136,28 @@ private suspend fun processSingleImage(
     outputFile: File,
     quality: Int,
     inputBytes: Long,
+    knownDimensions: JpegDimensions?,
+    onDimensionsRead: suspend (JpegDimensions) -> Unit,
     metrics: ProcessingMetricsRecorder
 ): PreparedBatchOutput {
     val outputUri = outputFile.toUri()
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
     val compressionResult = try {
-        context.compressJpegImage(inputUri, outputFile, q, metrics)
+        context.compressJpegImage(
+            inputUri = inputUri,
+            outputFile = outputFile,
+            quality = q,
+            knownDimensions = knownDimensions,
+            onDimensionsRead = onDimensionsRead,
+            metrics = metrics
+        )
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (stateFailure: JpegStatePersistenceException) {
+        throw stateFailure
+    } catch (sourceSafety: JpegSourceSafetyException) {
+        throw sourceSafety
     } catch (error: Exception) {
         JpegCompressionResult(
             succeeded = false,
@@ -129,7 +193,7 @@ private suspend fun processSingleImage(
         )
     }
 
-    if (inputBytes > 0L && compressedBytes > inputBytes) {
+    if (inputBytes > 0L && compressedBytes >= inputBytes) {
         return fallbackToOriginalOrFail(
             context = context,
             inputUri = inputUri,
@@ -161,7 +225,7 @@ private suspend fun processSingleImage(
     }
 
     val finalBytes = outputFile.length()
-    if (inputBytes > 0L && finalBytes > inputBytes) {
+    if (inputBytes > 0L && finalBytes >= inputBytes) {
         return fallbackToOriginalOrFail(
             context = context,
             inputUri = inputUri,
@@ -211,7 +275,7 @@ private suspend fun fallbackToOriginalOrFail(
         bytesWritten = copiedBytes
     )
     if (inputBytes > 0L && copiedBytes != inputBytes) {
-        throw IOException("Source changed while it was being copied.")
+        throw SourceChangedException("Source changed while it was being copied.")
     }
 
     return PreparedBatchOutput(

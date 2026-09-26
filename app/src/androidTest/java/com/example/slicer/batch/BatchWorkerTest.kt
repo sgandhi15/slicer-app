@@ -69,16 +69,16 @@ class BatchWorkerTest {
     }
 
     @Test
-    fun repeatedWorkerInterruptionsFailTheBatchAtTheRetryLimit() = runBlocking {
+    fun repeatedWorkerInterruptionsPreserveUntouchedQueueAtTheRetryLimit() = runBlocking {
         createBatch(BATCH_ID)
 
         val result = buildWorker(runAttemptCount = 3).doWork()
 
         val batch = requireNotNull(dao.getBatch(BATCH_ID))
         assertTrue(result is ListenableWorker.Result.Failure)
-        assertEquals(BatchState.Failed, batch.state)
-        assertEquals(1, batch.failedCount)
-        assertEquals(BatchItemState.Failed, dao.getItems(BATCH_ID).single().state)
+        assertEquals(BatchState.Retrying, batch.state)
+        assertEquals(0, batch.failedCount)
+        assertEquals(BatchItemState.Queued, dao.getItems(BATCH_ID).single().state)
     }
 
     private fun buildWorker(runAttemptCount: Int = 1): BatchWorker {

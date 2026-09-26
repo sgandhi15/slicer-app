@@ -1,5 +1,6 @@
 package com.example.slicer.batch
 
+import com.example.slicer.core.RetryableFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,11 +17,12 @@ class BatchProcessingPolicyTest {
     }
 
     @Test
-    fun onlyIoFailuresAreRetried() {
-        assertTrue(IOException("provider unavailable").isRetryableItemFailure())
+    fun onlyExplicitTransientFailuresAreRetried() {
+        assertFalse(IOException("provider unavailable").isRetryableItemFailure())
+        assertTrue(RetryableTestException().isRetryableItemFailure())
         assertFalse(SecurityException("permission lost").isRetryableItemFailure())
         assertFalse(
-            IOException("publication failed", SecurityException("permission lost"))
+            RetryableTestException(SecurityException("permission lost"))
                 .isRetryableItemFailure()
         )
         assertFalse(IllegalStateException("invalid state").isRetryableItemFailure())
@@ -32,4 +34,7 @@ class BatchProcessingPolicyTest {
         assertEquals(3, MAX_ITEM_ATTEMPTS)
         assertEquals(2, MAX_WORKER_RETRIES)
     }
+
+    private class RetryableTestException(cause: Throwable? = null) :
+        IOException("temporary", cause), RetryableFailure
 }

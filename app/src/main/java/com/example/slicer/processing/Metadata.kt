@@ -1,6 +1,7 @@
 package com.example.slicer.processing
 
 import com.example.slicer.core.LOG_TAG
+import com.example.slicer.core.RetryableCleanupException
 import com.example.slicer.telemetry.MeasuredInputStream
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
 import com.example.slicer.telemetry.ProcessingStage
@@ -41,6 +42,7 @@ internal suspend fun Context.preserveJpegMetadata(
         var encodedBytesRead = 0L
         var validationBytesRead = 0L
         var streamedOutputBytes = 0L
+        var cancellation: CancellationException? = null
         try {
             var outputBytes = 0L
             val rewriteResult = FileOutputStream(replacement).use { fileOutput ->
@@ -117,6 +119,7 @@ internal suspend fun Context.preserveJpegMetadata(
             )
             encodedFile.isFile && encodedFile.length() == outputBytes
         } catch (cancelled: CancellationException) {
+            cancellation = cancelled
             throw cancelled
         } catch (error: Exception) {
             Log.w(LOG_TAG, "Could not preserve JPEG metadata safely.", error)
@@ -131,7 +134,10 @@ internal suspend fun Context.preserveJpegMetadata(
                 bytesWritten = streamedOutputBytes
             )
             if (replacement.exists() && !replacement.delete()) {
-                Log.w(LOG_TAG, "Could not remove metadata replacement '${replacement.name}'.")
+                val cleanupError = RetryableCleanupException(
+                    "Could not remove metadata replacement '${replacement.name}'."
+                )
+                cancellation?.addSuppressed(cleanupError) ?: throw cleanupError
             }
         }
     }

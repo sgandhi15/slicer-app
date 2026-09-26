@@ -3,7 +3,6 @@ package com.example.slicer.storage
 import com.example.slicer.core.DEFAULT_COPY_BUFFER_BYTES
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
-import com.example.slicer.core.DEFAULT_OUTPUT_RELATIVE_PATH
 import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
@@ -14,7 +13,7 @@ import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
 import com.example.slicer.core.PREFS_QUALITY_KEY
 import com.example.slicer.core.PREFS_WELCOME_SCREEN_SEEN_KEY
-import com.example.slicer.telemetry.MeasuredInputStream
+import com.example.slicer.core.RetryableFailure
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -24,14 +23,15 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
-import android.provider.MediaStore
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.FileNotFoundException
 import java.io.IOException
 import kotlin.math.ceil
 import java.util.Locale
@@ -193,79 +193,6 @@ internal fun sanitizeOutputFileName(rawName: String): String {
     }
 }
 
-internal fun Context.uniqueOutputName(baseName: String, usedNames: MutableSet<String>): String {
-    if (usedNames.add(baseName)) {
-        return baseName
-    }
-
-    val dot = baseName.lastIndexOf('.')
-    val stem = if (dot > 0) baseName.substring(0, dot) else baseName
-    val extension = if (dot > 0) baseName.substring(dot) else ".jpg"
-
-    var index = 1
-    while (true) {
-        val candidate = "$stem-$index$extension"
-        if (usedNames.add(candidate)) {
-            return candidate
-        }
-        index++
-    }
-}
-
-internal fun Context.queryExistingOutputNames(outputFolderUri: Uri): Set<String> {
-    if (outputFolderUri.isDefaultOutputFolder()) {
-        return queryExistingDefaultOutputNames()
-    }
-
-    return runCatching {
-        val documentId = DocumentsContract.getTreeDocumentId(outputFolderUri)
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-            outputFolderUri,
-            documentId
-        )
-
-        val projection = arrayOf(OpenableColumns.DISPLAY_NAME)
-        val names = linkedSetOf<String>()
-
-        contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                if (nameIndex >= 0) {
-                    cursor.getString(nameIndex)?.let { names.add(it) }
-                }
-            }
-        }
-
-        names
-    }.getOrNull() ?: emptySet()
-}
-
-internal fun Context.queryExistingDefaultOutputNames(): Set<String> {
-    return runCatching {
-        val projection = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME)
-        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
-        val selectionArgs = arrayOf(DEFAULT_OUTPUT_RELATIVE_PATH)
-        val names = linkedSetOf<String>()
-
-        contentResolver.query(
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-            projection,
-            selection,
-            selectionArgs,
-            null
-        )?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                if (nameIndex >= 0) {
-                    cursor.getString(nameIndex)?.let { names.add(it) }
-                }
-            }
-        }
-
-        names
-    }.getOrNull() ?: emptySet()
-}
-
 internal fun Context.isSupportedJpegUri(uri: Uri): Boolean {
     val mimeType = runCatching { contentResolver.getType(uri) }
         .getOrNull()
@@ -318,28 +245,13 @@ internal fun Context.resolveContentSize(uri: Uri): Long {
             null
         )?.use { cursor ->
             val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-            if (cursor.moveToFirst() && sizeIndex >= 0) cursor.getLong(sizeIndex) else -1L
+            if (cursor.moveToFirst() && sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                cursor.getLong(sizeIndex)
+            } else {
+                -1L
+            }
         }
     }.getOrNull() ?: -1L
-}
-
-internal fun Context.loadBitmapForCompression(
-    uri: Uri,
-    onBytesRead: (Long) -> Unit = {}
-): Bitmap? {
-    return runCatching {
-        contentResolver.openInputStream(uri)?.use { input ->
-            val measured = MeasuredInputStream(input)
-            val options = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            }
-            try {
-                BitmapFactory.decodeStream(measured, null, options)
-            } finally {
-                onBytesRead(measured.bytesRead)
-            }
-        }
-    }.getOrNull()
 }
 
 internal fun Context.loadBitmapForPreview(uri: Uri, maxDimension: Int = 1400): Bitmap? {
@@ -441,28 +353,39 @@ private fun rotateBitmapForOrientation(bitmap: Bitmap, orientation: Int): Bitmap
 }
 
 internal suspend fun Context.copyUriContent(sourceUri: Uri, destinationUri: Uri): Long {
-    return withContext(Dispatchers.IO) {
-        contentResolver.openInputStream(sourceUri)?.use { input ->
-            contentResolver.openOutputStream(destinationUri, "wt")?.use { output ->
-                val buffer = ByteArray(DEFAULT_COPY_BUFFER_BYTES)
-                var copiedBytes = 0L
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val bytesRead = input.read(buffer)
-                    if (bytesRead < 0) break
-                    if (bytesRead == 0) {
-                        val nextByte = input.read()
-                        if (nextByte < 0) break
-                        output.write(nextByte)
-                        copiedBytes++
-                    } else {
-                        output.write(buffer, 0, bytesRead)
-                        copiedBytes += bytesRead
+    return try {
+        withContext(Dispatchers.IO) {
+            contentResolver.openInputStream(sourceUri)?.use { input ->
+                contentResolver.openOutputStream(destinationUri, "wt")?.use { output ->
+                    val buffer = ByteArray(DEFAULT_COPY_BUFFER_BYTES)
+                    var copiedBytes = 0L
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val bytesRead = input.read(buffer)
+                        if (bytesRead < 0) break
+                        if (bytesRead == 0) {
+                            val nextByte = input.read()
+                            if (nextByte < 0) break
+                            output.write(nextByte)
+                            copiedBytes++
+                        } else {
+                            output.write(buffer, 0, bytesRead)
+                            copiedBytes += bytesRead
+                        }
                     }
-                }
-                output.flush()
-                copiedBytes
-            } ?: throw IOException("Could not open output destination")
-        } ?: throw IOException("Could not open source file")
+                    output.flush()
+                    copiedBytes
+                } ?: throw FileNotFoundException("Could not open output destination")
+            } ?: throw FileNotFoundException("Could not open source file")
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (missing: FileNotFoundException) {
+        throw missing
+    } catch (error: IOException) {
+        throw RetryableProviderIOException("Provider I/O was interrupted.", error)
     }
 }
+
+internal class RetryableProviderIOException(message: String, cause: IOException) :
+    IOException(message, cause), RetryableFailure

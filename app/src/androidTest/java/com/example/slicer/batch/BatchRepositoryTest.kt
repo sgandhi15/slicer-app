@@ -8,7 +8,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.WorkManager
 import androidx.work.await as awaitOperation
 import com.example.slicer.storage.SourceUriPermissionStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,6 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
@@ -66,7 +72,45 @@ class BatchRepositoryTest {
     }
 
     @Test
-    fun missingPersistedGrantFailsThePersistedBatch() = runBlocking {
+    fun cancellationPersistsWhileSourceGrantAcquisitionIsBlocked() = runBlocking {
+        val source = Uri.parse("content://com.example.slicer.test/source/blocked")
+        val persistStarted = CountDownLatch(1)
+        val releasePersist = CountDownLatch(1)
+        sourcePermissions.beforePersist = {
+            persistStarted.countDown()
+            check(releasePersist.await(5, TimeUnit.SECONDS))
+        }
+
+        val setup = async(Dispatchers.Default) {
+            repository.createAndEnqueueBatch(
+                sourceUris = listOf(source),
+                destinationUri = Uri.parse("content://com.example.slicer.test/destination"),
+                quality = 80
+            )
+        }
+        assertTrue(persistStarted.await(5, TimeUnit.SECONDS))
+        val batch = withTimeout(5_000) {
+            var current = dao.observeLatestBatch().first()
+            while (current == null) {
+                delay(10)
+                current = dao.observeLatestBatch().first()
+            }
+            requireNotNull(current)
+        }
+        val cancellation = async { repository.requestCancellation(batch.id) }
+
+        withTimeout(5_000) {
+            while (dao.getBatch(batch.id)?.cancellationRequested != true) delay(10)
+        }
+        releasePersist.countDown()
+        cancellation.await()
+        assertEquals(batch.id, setup.await())
+        assertEquals(BatchState.Cancelled, dao.getBatch(batch.id)?.state)
+        assertTrue(workManager.getWorkInfosForUniqueWork(batchWorkName(batch.id)).get().isEmpty())
+    }
+
+    @Test
+    fun missingPersistedGrantFailsOnlyThePersistedItem() = runBlocking {
         val source = Uri.parse("content://com.example.slicer.test/no-grant")
         sourcePermissions.deniedUris += source
         val batchId = repository.createAndEnqueueBatch(
@@ -76,9 +120,8 @@ class BatchRepositoryTest {
         )
 
         val batch = requireNotNull(dao.getBatch(batchId))
-        assertEquals(BatchState.Failed, batch.state)
+        assertEquals(BatchState.CompletedWithFailures, batch.state)
         assertEquals(1, batch.failedCount)
-        assertTrue(batch.lastError?.contains("Durable access") == true)
         assertEquals(BatchItemState.Failed, dao.getItems(batchId).single().state)
     }
 
@@ -149,7 +192,7 @@ class BatchRepositoryTest {
     }
 
     @Test
-    fun partialGrantFailureReleasesAlreadyAcquiredSources() = runBlocking {
+    fun partialGrantFailureKeepsValidItemsQueued() = runBlocking {
         val first = Uri.parse("content://com.example.slicer.test/source/first")
         val second = Uri.parse("content://com.example.slicer.test/source/second")
         sourcePermissions.deniedUris += second
@@ -160,9 +203,15 @@ class BatchRepositoryTest {
             quality = 80
         )
 
-        assertEquals(BatchState.Failed, dao.getBatch(batchId)?.state)
-        assertFalse(first in sourcePermissions.grantedUris)
-        assertTrue(first in sourcePermissions.releasedUris)
+        assertEquals(BatchState.Queued, dao.getBatch(batchId)?.state)
+        assertEquals(
+            listOf(BatchItemState.Queued, BatchItemState.Failed),
+            dao.getItems(batchId).map(BatchItemEntity::state)
+        )
+        assertTrue(first in sourcePermissions.grantedUris)
+        assertFalse(first in sourcePermissions.releasedUris)
+        workManager.cancelUniqueWork(batchWorkName(batchId)).awaitOperation()
+        Unit
     }
 
     @Test
@@ -231,8 +280,39 @@ class BatchRepositoryTest {
         repository.resumeIncompleteBatches()
 
         val batch = requireNotNull(dao.getBatch(batchId))
-        assertEquals(BatchState.Failed, batch.state)
+        assertEquals(BatchState.CompletedWithFailures, batch.state)
         assertEquals(BatchItemState.Failed, dao.getItems(batchId).single().state)
+    }
+
+    @Test
+    fun startupGrantLossFailsOnlyTheAffectedItem() = runBlocking {
+        val batchId = UUID.randomUUID().toString()
+        val available = Uri.parse("content://source/available")
+        val missing = Uri.parse("content://source/missing")
+        sourcePermissions.grantedUris += available
+        dao.createBatch(
+            BatchEntity(
+                id = batchId,
+                createdAt = 1L,
+                quality = 80,
+                destinationUri = "content://destination",
+                state = BatchState.NeedsDestination,
+                totalCount = 2
+            ),
+            listOf(
+                BatchItemEntity("$batchId-available", batchId, 0, available.toString()),
+                BatchItemEntity("$batchId-missing", batchId, 1, missing.toString())
+            )
+        )
+
+        repository.resumeIncompleteBatches()
+
+        assertEquals(
+            listOf(BatchItemState.Queued, BatchItemState.Failed),
+            dao.getItems(batchId).map(BatchItemEntity::state)
+        )
+        assertEquals(BatchState.NeedsDestination, dao.getBatch(batchId)?.state)
+        assertTrue(available in sourcePermissions.grantedUris)
     }
 
     @Test
@@ -317,12 +397,14 @@ class BatchRepositoryTest {
         val grantedUris = linkedSetOf<Uri>()
         val deniedUris = mutableSetOf<Uri>()
         val releasedUris = mutableSetOf<Uri>()
+        var beforePersist: (() -> Unit)? = null
 
         override fun persistedReadUris(): Set<Uri> = grantedUris.toSet()
 
         override fun persistedPermissionCount(): Int = grantedUris.size
 
         override fun persistReadPermission(uri: Uri): Boolean {
+            beforePersist?.invoke()
             if (uri in deniedUris) return false
             grantedUris += uri
             return true

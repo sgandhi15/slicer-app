@@ -18,18 +18,18 @@ import com.example.slicer.R
 import com.example.slicer.SlicerApplication
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.ProcessingDecision
+import com.example.slicer.core.RetryableCleanupException
 import com.example.slicer.processing.processBatchItem
+import com.example.slicer.processing.JpegStatePersistenceException
 import com.example.slicer.storage.createOutputTempFile
 import com.example.slicer.storage.deleteOutputTempFile
 import com.example.slicer.storage.OutputPublicationException
 import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.outputFolderAccess
 import com.example.slicer.storage.publishPreparedOutput
-import com.example.slicer.storage.queryExistingOutputNames
 import com.example.slicer.storage.resolveContentSize
 import com.example.slicer.storage.resolveDisplayName
 import com.example.slicer.storage.sanitizeOutputFileName
-import com.example.slicer.storage.uniqueOutputName
 import com.example.slicer.storage.withOutputLifecycleLock
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
 import com.example.slicer.telemetry.ProcessingStage
@@ -51,12 +51,7 @@ internal class BatchWorker(
         return withOutputLifecycleLock {
             try {
                 if (runAttemptCount > MAX_WORKER_RETRIES) {
-                    val blockedItems = cleanupInterruptedBatch(batchId)
-                    if (blockedItems.isEmpty()) {
-                        dao.failBatch(batchId, "Batch processing was interrupted repeatedly.")
-                    } else {
-                        markCleanupBlocked(batchId)
-                    }
+                    preserveForManualRecovery(batchId, "Batch processing was interrupted repeatedly.")
                     return@withOutputLifecycleLock Result.failure()
                 }
                 processBatch(batchId)
@@ -70,17 +65,12 @@ internal class BatchWorker(
                 throw cancelled
             } catch (error: Exception) {
                 val message = error.message ?: "Batch processing was interrupted."
-                if (runAttemptCount < MAX_WORKER_RETRIES) {
+                if (error is RetryableWorkerFailure && runAttemptCount < MAX_WORKER_RETRIES) {
                     persistInterruption(batchId, message)
                     Result.retry()
                 } else {
                     withContext(NonCancellable) {
-                        val blockedItems = cleanupInterruptedBatch(batchId)
-                        if (blockedItems.isEmpty()) {
-                            dao.failBatch(batchId, message)
-                        } else {
-                            markCleanupBlocked(batchId)
-                        }
+                        preserveForManualRecovery(batchId, message)
                     }
                     Result.failure()
                 }
@@ -112,7 +102,7 @@ internal class BatchWorker(
             maxAttempts = MAX_ITEM_ATTEMPTS,
             blockedItemIds = cleanup.blockedProcessingItemIds
         )
-        if (cleanup.blockedProcessingItemIds.isNotEmpty()) {
+        if (!cleanup.temporaryOutputsCleaned || cleanup.blockedProcessingItemIds.isNotEmpty()) {
             markCleanupBlocked(batchId)
             throw CleanupBlockedException()
         }
@@ -126,7 +116,6 @@ internal class BatchWorker(
             return
         }
         if (!ensureDestinationAvailable(batch)) return
-        if (!prepareQueuedItems(batch)) return
 
         batch = dao.getBatch(batchId) ?: return
         if (batch.cancellationRequested) {
@@ -146,6 +135,7 @@ internal class BatchWorker(
 
             if (!ensureDestinationAvailable(batch)) return
 
+            if (!prepareNextQueuedItem(batch)) break
             val item = dao.claimNextItem(batchId) ?: break
             val inputName = checkNotNull(item.inputName) { "Queued item is missing its input name." }
             val outputName = checkNotNull(item.outputName) { "Queued item is missing its output name." }
@@ -161,6 +151,23 @@ internal class BatchWorker(
                     tempFile = tempFile,
                     quality = batch.quality,
                     inputBytes = item.inputBytes,
+                    knownDimensions = item.persistedDimensions(),
+                    onDimensionsRead = { dimensions ->
+                        try {
+                            if (dao.recordDimensions(item.id, dimensions.width, dimensions.height) != 1) {
+                                throw JpegStatePersistenceException("Could not persist source dimensions.")
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: JpegStatePersistenceException) {
+                            throw error
+                        } catch (error: Exception) {
+                            throw JpegStatePersistenceException(
+                                "Could not persist source dimensions.",
+                                error
+                            )
+                        }
+                    },
                     metrics = metrics
                 )
                 val published = metrics.measure(ProcessingStage.Publication) {
@@ -169,6 +176,16 @@ internal class BatchWorker(
                         outputFolderUri = batch.destinationUri.toUri(),
                         outputName = outputName,
                         itemId = item.id,
+                        onOutputCreationStarting = {
+                            check(dao.markOutputCreationStarted(item.id) == 1) {
+                                "Could not journal output creation."
+                            }
+                        },
+                        onOutputCleanupConfirmed = {
+                            check(dao.clearIncompleteOutputUri(item.id, item.batchId)) {
+                                "Could not clear the output-creation journal."
+                            }
+                        },
                         onOutputCreated = { outputUri, actualOutputName ->
                             check(
                                 dao.recordOutputUri(
@@ -202,7 +219,7 @@ internal class BatchWorker(
                 }
                 repository.releaseSourcePermissionIfUnused(item.sourceUri.toUri())
                 if (!applicationContext.deleteOutputTempFile(item.id)) {
-                    Log.w(LOG_TAG, "Could not remove temporary output for item ${item.id}.")
+                    throw RetryableCleanupException("Could not remove the prepared temporary output.")
                 }
                 metricsOutcome = prepared.decision.name
             } catch (cancelled: CancellationException) {
@@ -236,7 +253,7 @@ internal class BatchWorker(
             }
             repository.cleanupAbandonedArtifacts()
         }
-        if (item.id in cleanup.blockedProcessingItemIds) {
+        if (!cleanup.temporaryOutputsCleaned || item.id in cleanup.blockedProcessingItemIds) {
             markCleanupBlocked(item.batchId)
             throw CleanupBlockedException()
         }
@@ -273,21 +290,21 @@ internal class BatchWorker(
         repository.releaseSourcePermissionIfUnused(current.sourceUri.toUri())
     }
 
-    private suspend fun cleanupInterruptedBatch(batchId: String): Set<String> {
+    private suspend fun cleanupInterruptedBatch(batchId: String): BatchArtifactCleanupReport {
         val cleanup = repository.cleanupAbandonedArtifacts()
         dao.recoverInterruptedItems(
             batchId = batchId,
             maxAttempts = MAX_ITEM_ATTEMPTS,
             blockedItemIds = cleanup.blockedProcessingItemIds
         )
-        return cleanup.blockedProcessingItemIds
+        return cleanup
     }
 
     private suspend fun persistInterruption(batchId: String, message: String) = withContext(NonCancellable) {
         if (dao.getBatch(batchId)?.state?.isActive != true) return@withContext
 
-        val blockedItems = cleanupInterruptedBatch(batchId)
-        if (blockedItems.isNotEmpty()) {
+        val cleanup = cleanupInterruptedBatch(batchId)
+        if (!cleanup.temporaryOutputsCleaned || cleanup.blockedProcessingItemIds.isNotEmpty()) {
             markCleanupBlocked(batchId)
             return@withContext
         }
@@ -304,54 +321,64 @@ internal class BatchWorker(
 
     private class CleanupBlockedException : Exception()
 
+    private class RetryableWorkerFailure(message: String) : IOException(message)
+
     private suspend fun markCleanupBlocked(batchId: String) {
         val message = "Waiting to remove an incomplete output before retrying."
         dao.markForWorkerRetry(batchId, message)
         dao.recordActiveError(batchId, message)
     }
 
-    private suspend fun prepareQueuedItems(batch: BatchEntity): Boolean {
-        val items = dao.getItems(batch.id)
-        val usedNames = applicationContext.queryExistingOutputNames(batch.destinationUri.toUri()).toMutableSet()
-        items.mapNotNullTo(usedNames) { item -> item.outputName }
+    private suspend fun preserveForManualRecovery(batchId: String, message: String) {
+        val cleanup = cleanupInterruptedBatch(batchId)
+        if (!cleanup.temporaryOutputsCleaned || cleanup.blockedProcessingItemIds.isNotEmpty()) {
+            markCleanupBlocked(batchId)
+            return
+        }
+        dao.markForWorkerRetry(batchId, message)
+        dao.finishBatch(batchId)
+    }
 
-        for (item in items) {
-            if (item.state != BatchItemState.Queued || (item.inputName != null && item.outputName != null)) continue
+    private suspend fun prepareNextQueuedItem(batch: BatchEntity): Boolean {
+        val item = dao.getNextQueuedItemForPreparation(batch.id) ?: return false
+        if (item.inputName != null && item.outputName != null) return true
 
-            val currentBatch = dao.getBatch(batch.id) ?: return false
-            if (currentBatch.cancellationRequested) {
-                dao.requestCancellation(batch.id)
-                dao.finishBatch(batch.id)
-                return false
-            }
-
-            setForeground(
-                createForegroundInfo(
-                    currentBatch,
-                    "Preparing image ${item.position + 1} of ${currentBatch.totalCount}"
-                )
+        setForeground(
+            createForegroundInfo(
+                batch,
+                "Preparing image ${item.position + 1} of ${batch.totalCount}"
             )
-            val sourceUri = item.sourceUri.toUri()
-            val inputName = applicationContext.resolveDisplayName(sourceUri)
-            val outputName = applicationContext.uniqueOutputName(
-                sanitizeOutputFileName(inputName),
-                usedNames
-            )
-            dao.prepareItem(
+        )
+        val sourceUri = item.sourceUri.toUri()
+        val inputName = applicationContext.resolveDisplayName(sourceUri)
+        val outputName = collisionResistantOutputName(
+            inputName = sanitizeOutputFileName(inputName),
+            batchId = batch.id,
+            position = item.position
+        )
+        val prepared = dao.prepareItem(
                 itemId = item.id,
                 batchId = batch.id,
                 inputName = inputName,
                 outputName = outputName,
                 inputBytes = applicationContext.resolveContentSize(sourceUri)
             )
+        if (!prepared && dao.getBatch(batch.id)?.cancellationRequested != true) {
+            error("Could not persist image metadata.")
         }
-        check(
-            dao.getItems(batch.id).none { item ->
-                item.state == BatchItemState.Queued && (item.inputName == null || item.outputName == null)
-            }
-        ) { "Batch item preparation did not finish." }
-        return true
+        return prepared
     }
+
+    private fun collisionResistantOutputName(inputName: String, batchId: String, position: Int): String {
+        val dot = inputName.lastIndexOf('.')
+        val extension = if (dot > 0) inputName.substring(dot) else ".jpg"
+        val stem = if (dot > 0) inputName.substring(0, dot) else inputName
+        val batchToken = batchId.filter(Char::isLetterOrDigit).take(8).ifBlank { "batch" }
+        return "${stem.take(80).ifBlank { "image" }}-slicer-$batchToken-${position + 1}$extension"
+    }
+
+    private fun BatchItemEntity.persistedDimensions() =
+        if (width > 0 && height > 0) com.example.slicer.processing.JpegDimensions(width, height) else null
 
     private suspend fun ensureDestinationAvailable(batch: BatchEntity): Boolean {
         return when (applicationContext.outputFolderAccess(batch.destinationUri.toUri())) {
@@ -365,7 +392,7 @@ internal class BatchWorker(
             }
 
             OutputFolderAccess.TemporarilyUnavailable -> {
-                throw IOException("Output provider is temporarily unavailable.")
+                throw RetryableWorkerFailure("Output provider is temporarily unavailable.")
             }
         }
     }

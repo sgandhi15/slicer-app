@@ -6,9 +6,7 @@ import android.graphics.BitmapFactory
 import androidx.core.net.toUri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.example.slicer.core.ProcessingDecision
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,7 +17,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class BatchProcessorMemoryFallbackTest {
     @Test
-    fun unsafeImageCopiesOriginalOverPartialTemporaryOutput() = runBlocking {
+    fun malformedUnsafeImageCannotBeCopiedOverPartialTemporaryOutput() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val source = File.createTempFile("unsafe-source-", ".jpg", context.cacheDir)
         val output = File.createTempFile("partial-output-", ".jpg", context.cacheDir)
@@ -33,18 +31,17 @@ class BatchProcessorMemoryFallbackTest {
             assertEquals(6_000, bounds.outWidth)
             assertEquals(5_000, bounds.outHeight)
 
-            val result = processBatchItem(
-                context = context,
-                inputUri = source.toUri(),
-                tempFile = output,
-                quality = 80,
-                inputBytes = source.length()
-            )
+            val failure = runCatching {
+                processBatchItem(
+                    context = context,
+                    inputUri = source.toUri(),
+                    tempFile = output,
+                    quality = 80,
+                    inputBytes = source.length()
+                )
+            }.exceptionOrNull()
 
-            assertEquals(ProcessingDecision.CopiedOriginal, result.decision)
-            assertEquals(source.length(), result.outputBytes)
-            assertTrue(requireNotNull(result.message).contains("too large"))
-            assertArrayEquals(sourceBytes, output.readBytes())
+            assertTrue(failure is InvalidJpegDataException)
         } finally {
             source.delete()
             output.delete()

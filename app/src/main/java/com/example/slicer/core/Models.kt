@@ -3,6 +3,7 @@ package com.example.slicer.core
 import android.net.Uri
 import android.os.Environment
 import androidx.core.net.toUri
+import java.io.IOException
 
 internal const val DEFAULT_QUALITY = 80
 internal const val MIN_QUALITY = 1
@@ -24,7 +25,6 @@ internal val JPEG_EXTENSION_SET = JPEG_EXTENSIONS.toSet()
 internal const val OUTPUT_MIME_TYPE = "image/jpeg"
 
 internal const val DEFAULT_COPY_BUFFER_BYTES = 16_384
-internal const val MAX_COMPRESSION_PIXELS = 24_000_000L
 
 internal const val JPEG_START_OF_IMAGE: Int = 0xFFD8
 internal const val JPEG_START_OF_SCAN: Int = 0xFFDA
@@ -38,9 +38,10 @@ internal const val JPEG_SEGMENT_COMMENT: Int = 0xFFFE
 
 internal const val LOG_TAG = "Slicer"
 
-internal const val MOZJPEG_SUBSAMPLING_420 = 2
-internal const val MOZJPEG_SUBSAMPLING_422 = 1
-internal const val MOZJPEG_SUBSAMPLING_444 = 0
+
+internal interface RetryableFailure
+
+internal class RetryableCleanupException(message: String) : IOException(message), RetryableFailure
 
 internal enum class ProcessingDecision {
     Compressed,

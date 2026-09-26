@@ -2,16 +2,17 @@ package com.example.slicer.processing
 
 import android.app.ActivityManager
 import android.content.Context
-import com.example.slicer.core.MAX_COMPRESSION_PIXELS
 
-// Includes RGBA pixels and the worst-case coefficient buffers used by 4:4:4 retries.
+// Conservative legacy bitmap budget, retained only for platform validation when
+// the native library is unavailable. Compression uses NativeEncodingMemoryPolicy.
 internal const val ENCODING_ESTIMATED_BYTES_PER_PIXEL = 16L
 // Native bitmap and codec allocations are guarded by system headroom, not charged to the Java heap twice.
 internal const val ENCODING_ESTIMATED_APP_BYTES_PER_PIXEL = 4L
 internal const val ENCODING_APP_RESERVE_BYTES = 64L * 1024L * 1024L
 internal const val ENCODING_SYSTEM_RESERVE_BYTES = 256L * 1024L * 1024L
-private const val LOW_RAM_MAX_COMPRESSION_PIXELS = 12_000_000L
 private const val BYTES_PER_MEBIBYTE = 1024L * 1024L
+private const val MINIMUM_JPEG_VALIDATION_WORKING_BYTES = 32L * BYTES_PER_MEBIBYTE
+private const val MAXIMUM_JPEG_VALIDATION_WORKING_BYTES = 192L * BYTES_PER_MEBIBYTE
 
 internal enum class EncodingMemoryRejection {
     InvalidDimensions,
@@ -25,8 +26,7 @@ internal data class EncodingMemorySnapshot(
     val appAvailableBytes: Long,
     val systemAvailableBytes: Long,
     val systemLowMemoryThresholdBytes: Long,
-    val isSystemLowMemory: Boolean,
-    val isLowRamDevice: Boolean
+    val isSystemLowMemory: Boolean
 )
 
 internal data class EncodingMemoryDecision(
@@ -44,17 +44,11 @@ internal fun evaluateEncodingMemory(
     if (width <= 0 || height <= 0) {
         return EncodingMemoryDecision(false, rejection = EncodingMemoryRejection.InvalidDimensions)
     }
-
-    val pixels = width.toLong() * height.toLong()
-    val pixelLimit = if (snapshot.isLowRamDevice) {
-        minOf(MAX_COMPRESSION_PIXELS, LOW_RAM_MAX_COMPRESSION_PIXELS)
-    } else {
-        MAX_COMPRESSION_PIXELS
-    }
-    if (pixels <= 0L || pixels > pixelLimit) {
+    if (width > MAX_JPEG_DIMENSION || height > MAX_JPEG_DIMENSION) {
         return EncodingMemoryDecision(false, rejection = EncodingMemoryRejection.ImageTooLarge)
     }
 
+    val pixels = width.toLong() * height.toLong()
     val estimatedPeakBytes = pixels * ENCODING_ESTIMATED_BYTES_PER_PIXEL
     val estimatedAppHeapBytes = pixels * ENCODING_ESTIMATED_APP_BYTES_PER_PIXEL
     if (snapshot.isSystemLowMemory) {
@@ -117,10 +111,19 @@ internal fun Context.evaluateEncodingMemory(width: Int, height: Int): EncodingMe
             appAvailableBytes = (appHeapLimit - javaHeapUsed).coerceAtLeast(0L),
             systemAvailableBytes = memoryInfo.availMem.coerceAtLeast(0L),
             systemLowMemoryThresholdBytes = memoryInfo.threshold.coerceAtLeast(0L),
-            isSystemLowMemory = memoryInfo.lowMemory,
-            isLowRamDevice = activityManager.isLowRamDevice
+            isSystemLowMemory = memoryInfo.lowMemory
         )
     )
+}
+
+internal fun Context.jpegValidationWorkingMemoryLimitBytes(): Long {
+    val activityManager = getSystemService(ActivityManager::class.java)
+        ?: return MINIMUM_JPEG_VALIDATION_WORKING_BYTES
+    val memoryInfo = ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
+    val thresholdReserve = saturatedMultiply(memoryInfo.threshold.coerceAtLeast(0L), 2L)
+    val systemReserve = maxOf(ENCODING_SYSTEM_RESERVE_BYTES, thresholdReserve)
+    return (memoryInfo.availMem - systemReserve)
+        .coerceIn(MINIMUM_JPEG_VALIDATION_WORKING_BYTES, MAXIMUM_JPEG_VALIDATION_WORKING_BYTES)
 }
 
 private fun saturatedAdd(left: Long, right: Long): Long {
@@ -134,3 +137,5 @@ private fun saturatedMultiply(left: Long, right: Long): Long {
     }
     return left * right
 }
+
+private const val MAX_JPEG_DIMENSION = 65_535

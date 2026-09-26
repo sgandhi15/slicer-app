@@ -27,6 +27,9 @@ add_library(
     slicer_mozjpeg
     SHARED
     mozjpeg_encoder.cpp
+    jpeg_transcode.cpp
+    jpeg_transcode_jni.cpp
+    codec_allocations.cpp
 )
 
 ExternalProject_Add(
@@ -37,6 +40,7 @@ ExternalProject_Add(
     STAMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/mozjpeg/stamp"
     DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/mozjpeg/download"
     UPDATE_DISCONNECTED 1
+    BUILD_ALWAYS 1
     GIT_REPOSITORY "https://github.com/mozilla/mozjpeg.git"
     GIT_TAG "${MOZJPEG_VERSION}"
     GIT_SHALLOW TRUE
@@ -48,14 +52,26 @@ ExternalProject_Add(
         -DANDROID_STL=${ANDROID_STL}
         -DCMAKE_ANDROID_STL_TYPE=${CMAKE_ANDROID_STL_TYPE}
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        "-DCMAKE_C_FLAGS=-include \"${CMAKE_CURRENT_SOURCE_DIR}/codec_allocation_redirect.h\""
         -DCMAKE_INSTALL_PREFIX=${MOZJPEG_INSTALL_DIR}
         -DENABLE_SHARED=OFF
         -DENABLE_STATIC=ON
-        -DWITH_TURBOJPEG=ON
+        -DWITH_TURBOJPEG=OFF
         -DWITH_JAVA=OFF
         -DWITH_SIMD=OFF
         -DPNG_SUPPORTED=OFF
         -DBUILD_TESTING=OFF
+    # Build only the codec. Its allocator entry points are supplied by our JNI
+    # library, so upstream command-line programs are intentionally not linked.
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target jpeg-static
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory "${MOZJPEG_INSTALL_DIR}/lib" "${MOZJPEG_INCLUDE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${MOZJPEG_BUILD_DIR}/libjpeg.a" "${MOZJPEG_LIBRARY}"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${MOZJPEG_SOURCE_DIR}/jpeglib.h"
+        "${MOZJPEG_SOURCE_DIR}/jmorecfg.h"
+        "${MOZJPEG_SOURCE_DIR}/jerror.h"
+        "${MOZJPEG_BUILD_DIR}/jconfig.h"
+        "${MOZJPEG_INCLUDE_DIR}"
     BUILD_BYPRODUCTS "${MOZJPEG_INSTALL_DIR}/lib/${MOZJPEG_LIBRARY_NAME}"
 )
 
@@ -86,7 +102,6 @@ target_link_libraries(
     slicer_mozjpeg
     PRIVATE
     mozjpeg_native
-    jnigraphics
     log
     m
 )

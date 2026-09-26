@@ -9,8 +9,8 @@ Every worker item emits one `Processing metrics` log line under the `Slicer` tag
 - Total elapsed and process CPU time.
 - Peak Java and native heap samples observed at stage boundaries.
 - Conservative process and Java-heap estimates used by memory admission.
-- Logical bytes read and written for completed operations, including repeated validation and metadata passes. A provider failure can stop before its partial byte count is available.
-- Elapsed time and invocation count for header inspection, memory admission, bitmap decode, native encoding, structural and visual validation, metadata, original fallback, final validation, and publication.
+- Logical bytes read and written for completed Kotlin stream operations, including marker validation and metadata passes. Native transcoding reports bytes supplied by its bounded source buffer; native validation and provider failures do not expose complete byte counts.
+- Elapsed time and invocation count for header inspection, memory admission, native decode/encode, metadata, original fallback, marker-level final validation, and publication. Legacy bitmap and visual stages are absent from production transcoding. Exceptional native or platform fallback decoding is not yet a separate timed stage.
 
 Read the records with:
 
@@ -24,9 +24,9 @@ Perfetto traces use matching `Slicer ...` async sections. UI state construction 
 
 The connected instrumentation suite exercises:
 
-- Queue insertion, serial claims, transactional completion, and exact summaries at 100, 400, and 1,000 rows.
-- A 400-URI selection with provider work off the main thread and no more than four validation workers.
-- Lazy result rendering and stable-key scrolling with 400 rows.
+- In-memory Room queue insertion, serial claims, transactional completion, and exact summaries at 100, 400, and 1,000 rows. This is DAO scale coverage, not process-restart durability coverage.
+- A 400-URI selection using an injected validator to verify off-main execution and no more than four validation workers. Real provider cancellation remains device/provider integration coverage.
+- Paging-backed component rendering and stable-key scrolling with 400 synthetic rows, plus focused Room `PagingSource` ordering/filtering coverage. The macrobenchmark exercises Room-backed paging at larger scale.
 
 Run the suite on an unlocked API 31 or newer device:
 
@@ -36,7 +36,7 @@ Run the suite on an unlocked API 31 or newer device:
 
 ## Processing Scenarios
 
-`ProcessingPerformanceTest` is opt-in so ordinary instrumentation runs stay deterministic. It covers a real 100, 500, or 1,000-image small-file engine loop plus real 12 MP and 24 MP decode, progressive MozJPEG encode, metadata, and validation paths. Direct native 12 MP and 24 MP cases isolate encoder behavior while still obeying the production memory-admission policy.
+`ProcessingPerformanceTest` is opt-in so ordinary instrumentation runs stay deterministic. It covers a synthetic 100, 500, or 1,000-item engine loop that reuses a generated small JPEG, plus generated 12 MP and 24 MP stripe images through decode, progressive MozJPEG encode, metadata dispatch, and validation. These tests stop at the app-private prepared output; they do not measure destination publication, Room completion, permission release, or worker recovery. Direct native 12 MP and 24 MP cases measure combined native decoding and encoding under the production memory budget; fixture bitmap generation happens before the measured operation.
 
 Run the default 100-image case and both representative sizes:
 
@@ -53,7 +53,7 @@ Change `slicer.batchSize` to `500` or `1000` for the longer runs. Fixture genera
 
 The `:benchmark` module targets the signed, profileable, R8-optimized `com.example.slicer.benchmark` app variant, isolated from normal debug and release app data. It captures:
 
-- Startup timing, frame timing, maximum process memory, and `Slicer UI state` mapping time while cold-starting 400 persisted results.
+- Startup timing, frame timing, maximum process memory, constant-size `Slicer UI state` mapping time, and initial page loading while cold-starting 400 persisted results.
 - Frame timing and maximum process memory during repeated scrolling over a 1,000-result data set.
 
 Run on an unlocked physical device:
@@ -70,15 +70,15 @@ The benchmark setup receiver clears only the isolated benchmark variant's databa
 
 The initial measurements keep deliberately conservative production behavior:
 
-- Maximum image size remains 24 MP, or 12 MP on low-RAM devices.
-- Whole-process admission retains a 16-bytes-per-pixel estimate plus at least 256 MiB system reserve.
-- Java-heap admission uses a separate 4-bytes-per-pixel estimate plus 64 MiB reserve. Native bitmap and codec allocations are no longer subtracted from the Java limit and then charged a second time.
+- Image admission is device-aware rather than capped at 24 MP or 12 MP: it rejects encoding when Java-heap or whole-process headroom is insufficient and falls back safely.
+- Native decoding and encoding share the available-system-memory budget after reserving at least 256 MiB or twice Android's low-memory threshold. All codec heap requests, including scan optimization and transient buffer growth, are charged to a shared allocation scope with a further 1 MiB application/native I/O reserve. Reported peaks include requested allocation sizes and headers, not total process RSS.
+- Java-heap admission retains a 64 MiB coordination reserve and no per-pixel charge. No full-resolution bitmap is allocated in the production compression path.
 - Exactly one image processor remains active. The current 24 MP peak leaves no evidence that two encoders are safe, and cleanup, cancellation, and output publication are intentionally single-flight.
-- Provider I/O failures receive at most three item attempts with 10-second then 20-second delays. Permission-loss `SecurityException`s are treated as permanent rather than consuming retries.
+- Provider I/O failures marked retryable receive at most three item attempts with 10-second then 20-second delays. Permission-loss `SecurityException`s and processing validation failures are treated as permanent rather than consuming retries; narrower transient-provider classification remains future work.
 
 ## Initial Reference Run
 
-These are smoke measurements from a debug instrumentation run on an `SM-S931W` running Android 16 on 2026-08-01. They validate the harness and policy direction, but they are not release regression thresholds because the device was not prepared as a controlled benchmark runner.
+These predate the native decode-to-encode pipeline and are historical smoke measurements from a debug instrumentation run on an `SM-S931W` running Android 16 on 2026-08-01. The originating artifacts were not retained with the repository, so the values validate only the initial harness direction and must not be used as release regression thresholds.
 
 | Scenario | Elapsed | Process CPU | Peak Java heap | Peak native heap |
 |---|---:|---:|---:|---:|
@@ -89,7 +89,7 @@ These are smoke measurements from a debug instrumentation run on an `SM-S931W` r
 
 The 12 MP and 24 MP figures were collected in one instrumentation process, so allocator retention can raise later heap samples. Establish release baselines from isolated repeated runs before setting CI thresholds or changing limits.
 
-The optimized macrobenchmark variant produced this initial five-iteration UI reference on the same device:
+The pre-paging optimized macrobenchmark variant produced this historical five-iteration UI reference on the same device. Paging changes require a new baseline before comparisons are made:
 
 | Scenario | Key median/percentile | Heap max median | Anonymous RSS max median |
 |---|---:|---:|---:|
@@ -105,3 +105,39 @@ The first scroll iteration had visibly higher memory than the steady-state media
 - Change memory or retry constants only with traces from representative low-, medium-, and high-memory devices.
 - Require cleanup correctness, no OOM, and no increase in failed or copied-original outcomes before accepting a throughput improvement.
 - Evaluate two encoders only in an isolated experiment with a shared memory reservation; production concurrency remains one until both memory and lifecycle safety are demonstrated.
+
+## Native allocation regression checks
+
+Run the allocation-scope tests with host address, leak, and undefined-behavior checks:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -fno-omit-frame-pointer -pthread -Iapp/src/main/cpp \
+  app/src/main/cpp/codec_allocations.cpp \
+  app/src/test/cpp/codec_allocations_test.cpp -o /tmp/slicer-codec-allocations-test
+/tmp/slicer-codec-allocations-test
+```
+
+`MozJpegTranscodeTest` exercises the JNI path on Android, including the reported
+4284 × 5712 dimensions, baseline and progressive inputs, full-resolution output,
+shared memory rejection, scan optimization under a tight budget, early and late
+cancellation, provider pipes and asset slices, corrupt input, grayscale, safe CMYK
+preservation, and EXIF orientation. Its large-image fixture is synthetic; these
+checks do not replace physical-device profiling with representative photographs.
+
+The full native audit builds the same pinned codec with AddressSanitizer and
+UndefinedBehaviorSanitizer. Pass the path to an existing v4.1.5 checkout (the
+Android `.cxx` build contains one under `mozjpeg-src`):
+
+```bash
+cmake -S app/src/test/cpp -B /tmp/slicer-native-audit -G Ninja \
+  -DMOZJPEG_SOURCE_DIR=/absolute/path/to/mozjpeg-src -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/slicer-native-audit --target transcode_audit_test
+/tmp/slicer-native-audit/transcode_audit_test
+```
+
+It sweeps memory budgets, cancellation checkpoints, truncation positions, and
+input corruption for both baseline and progressive JPEGs, and injects partial
+read failures and output write failures. `MozJpegDescriptorTest` separately checks
+Android descriptor reuse, sparse asset offsets above 2 GiB, Java callback
+exceptions, and protection against truncating the source at the Kotlin boundary.

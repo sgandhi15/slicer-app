@@ -2,6 +2,7 @@ package com.example.slicer.batch
 
 import android.content.Context
 import androidx.room.Room
+import androidx.paging.PagingSource
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
@@ -62,10 +63,11 @@ class BatchDaoTest {
         assertEquals(1, batch.completedCount)
         assertEquals(1, batch.compressedCount)
         assertEquals(60L, batch.totalOutputBytes)
+        assertEquals(40L, dao.getItem(item.id)?.savedBytes)
     }
 
     @Test
-    fun itemCannotBeClaimedUntilDurableMetadataIsPrepared() = runBlocking {
+    fun itemCannotBeClaimedUntilItsMetadataIsPrepared() = runBlocking {
         createBatch(itemCount = 1, prepared = false)
 
         assertEquals(null, dao.claimNextItem(BATCH_ID))
@@ -80,6 +82,7 @@ class BatchDaoTest {
         )
 
         val item = requireNotNull(dao.claimNextItem(BATCH_ID))
+        assertEquals(BatchItemState.Processing, item.state)
         assertEquals("prepared.jpg", item.inputName)
         assertEquals("prepared.jpg", item.outputName)
         assertEquals(250L, item.inputBytes)
@@ -129,6 +132,7 @@ class BatchDaoTest {
             "content://output/interrupted",
             actualOutputName = "provider-name.jpg"
         )
+        assertTrue(dao.clearIncompleteOutputUri(interrupted.id, BATCH_ID))
 
         assertEquals(1, dao.recoverInterruptedItems(BATCH_ID, maxAttempts = 3))
 
@@ -136,6 +140,73 @@ class BatchDaoTest {
         assertEquals(BatchItemState.Queued, requeued.state)
         assertEquals(null, requeued.outputUri)
         assertEquals(null, requeued.actualOutputName)
+    }
+
+    @Test
+    fun interruptedItemWithUnconfirmedOutputCreationCannotBeRequeued() = runBlocking {
+        createBatch(itemCount = 1)
+        val interrupted = requireNotNull(dao.claimNextItem(BATCH_ID))
+        assertEquals(1, dao.markOutputCreationStarted(interrupted.id))
+
+        assertEquals(1, dao.recoverInterruptedItems(BATCH_ID, maxAttempts = 3))
+
+        val retained = requireNotNull(dao.getItem(interrupted.id))
+        assertEquals(BatchItemState.Processing, retained.state)
+        assertTrue(retained.outputCleanupPending)
+        assertEquals(null, dao.claimNextItem(BATCH_ID))
+    }
+
+    @Test
+    fun missingSourceFailureUpdatesOnlyItsItemAndSummary() = runBlocking {
+        createBatch(itemCount = 2)
+
+        assertTrue(
+            dao.failUnfinishedItem(
+                itemId = "$BATCH_ID-item-0",
+                batchId = BATCH_ID,
+                message = "Source permission was lost."
+            )
+        )
+
+        val items = dao.getItems(BATCH_ID)
+        assertEquals(listOf(BatchItemState.Failed, BatchItemState.Queued), items.map(BatchItemEntity::state))
+        assertEquals(1, dao.getBatch(BATCH_ID)?.failedCount)
+        assertEquals(1, requireNotNull(dao.claimNextItem(BATCH_ID)).position)
+    }
+
+    @Test
+    fun resultPagingLoadsOnlyTerminalRowsInPositionOrder() = runBlocking {
+        createBatch(itemCount = 4)
+        val first = requireNotNull(dao.claimNextItem(BATCH_ID))
+        dao.completeItem(
+            itemId = first.id,
+            batchId = BATCH_ID,
+            state = BatchItemState.Compressed,
+            outputUri = "content://output/first",
+            outputBytes = 50L,
+            message = null
+        )
+        dao.failUnfinishedItem("$BATCH_ID-item-1", BATCH_ID, "Missing source")
+        requireNotNull(dao.claimNextItem(BATCH_ID))
+
+        val page = dao.pagingResults(BATCH_ID).load(
+            PagingSource.LoadParams.Refresh(key = null, loadSize = 50, placeholdersEnabled = false)
+        ) as PagingSource.LoadResult.Page
+
+        assertEquals(listOf(0, 1), page.data.map(BatchItemEntity::position))
+    }
+
+    @Test
+    fun sourceDimensionsArePersistedOnTheClaimedItem() = runBlocking {
+        createBatch(itemCount = 1)
+        val item = requireNotNull(dao.claimNextItem(BATCH_ID))
+
+        assertEquals(1, dao.recordDimensions(item.id, width = 6000, height = 4000))
+
+        val persisted = requireNotNull(dao.getItem(item.id))
+        assertEquals(6000, persisted.width)
+        assertEquals(4000, persisted.height)
+        assertEquals(0, dao.recordDimensions(item.id, width = 1, height = 1))
     }
 
     @Test

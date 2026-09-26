@@ -2,14 +2,10 @@ package com.example.slicer.processing
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,66 +15,28 @@ import java.io.RandomAccessFile
 @RunWith(AndroidJUnit4::class)
 class MozJpegNativeFdTest {
     @Test
-    fun argb8888BitmapEncodesToBorrowedFileDescriptor() {
+    fun entropyTruncatedJpegIsRejectedByNativeValidation() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val output = File.createTempFile("mozjpeg-direct-", ".jpg", context.cacheDir)
+        val output = File.createTempFile("mozjpeg-truncated-", ".jpg", context.cacheDir)
         val bitmap = stripedBitmap()
 
         try {
-            assertTrue(MozJpegNative.runtimeStatusMessage(), MozJpegNative.isAvailable)
-            ParcelFileDescriptor.open(output, OUTPUT_MODE).use { descriptor ->
-                assertTrue(
-                    MozJpegNative.compressBitmapToJpeg(
-                        bitmap = bitmap,
-                        outputFileDescriptor = descriptor.fd,
-                        quality = 95,
-                        subsampling = MOZJPEG_SUBSAMPLING_420
-                    )
+            output.outputStream().use { stream ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream))
+            }
+            RandomAccessFile(output, "rw").use { file ->
+                file.setLength((file.length() / 2L).coerceAtLeast(4L))
+                file.seek(file.length() - 2L)
+                file.write(byteArrayOf(0xFF.toByte(), 0xD9.toByte()))
+            }
+
+            assertEquals(
+                NativeJpegValidationResult.InvalidData,
+                output.validateJpegViaMozJpeg(
+                    JpegDimensions(bitmap.width, bitmap.height),
+                    64L * 1024L * 1024L
                 )
-                assertTrue(descriptor.fileDescriptor.valid())
-            }
-
-            assertJpegMarkers(output)
-            val structure = output.inspectCompleteJpeg(JpegDimensions(bitmap.width, bitmap.height))
-                as JpegInspectionResult.Valid
-            assertEquals(JPEG_PROGRESSIVE_FRAME_MARKER, structure.structure.frameMarker)
-            assertTrue(structure.structure.scanCount > 1)
-            val decoded = requireNotNull(BitmapFactory.decodeFile(output.absolutePath))
-            try {
-                assertEquals(bitmap.width, decoded.width)
-                assertEquals(bitmap.height, decoded.height)
-                assertDominantChannel(decoded.getPixel(8, 12), Color.RED)
-                assertDominantChannel(decoded.getPixel(24, 12), Color.GREEN)
-                assertDominantChannel(decoded.getPixel(40, 12), Color.BLUE)
-                assertEquals(Color.RED, bitmap.getPixel(8, 12))
-            } finally {
-                decoded.recycle()
-            }
-        } finally {
-            bitmap.recycle()
-            output.delete()
-        }
-    }
-
-    @Test
-    fun unsupportedBitmapFormatIsRejectedWithoutClosingDescriptor() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val output = File.createTempFile("mozjpeg-unsupported-", ".jpg", context.cacheDir)
-        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ALPHA_8)
-
-        try {
-            assertTrue(MozJpegNative.runtimeStatusMessage(), MozJpegNative.isAvailable)
-            ParcelFileDescriptor.open(output, OUTPUT_MODE).use { descriptor ->
-                assertFalse(
-                    MozJpegNative.compressBitmapToJpeg(
-                        bitmap = bitmap,
-                        outputFileDescriptor = descriptor.fd,
-                        quality = 80
-                    )
-                )
-                assertTrue(descriptor.fileDescriptor.valid())
-            }
-            assertEquals(0L, output.length())
+            )
         } finally {
             bitmap.recycle()
             output.delete()
@@ -100,30 +58,4 @@ class MozJpegNativeFdTest {
         }
     }
 
-    private fun assertJpegMarkers(file: File) {
-        assertTrue(file.length() >= 4L)
-        RandomAccessFile(file, "r").use { input ->
-            assertEquals(0xFF, input.readUnsignedByte())
-            assertEquals(0xD8, input.readUnsignedByte())
-            input.seek(input.length() - 2L)
-            assertEquals(0xFF, input.readUnsignedByte())
-            assertEquals(0xD9, input.readUnsignedByte())
-        }
-    }
-
-    private fun assertDominantChannel(pixel: Int, expected: Int) {
-        val red = Color.red(pixel)
-        val green = Color.green(pixel)
-        val blue = Color.blue(pixel)
-        when (expected) {
-            Color.RED -> assertTrue(red > green + 80 && red > blue + 80)
-            Color.GREEN -> assertTrue(green > red + 80 && green > blue + 80)
-            Color.BLUE -> assertTrue(blue > red + 80 && blue > green + 80)
-        }
-    }
-
-    private companion object {
-        const val OUTPUT_MODE = ParcelFileDescriptor.MODE_WRITE_ONLY or
-            ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
-    }
 }

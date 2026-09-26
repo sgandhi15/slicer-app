@@ -1,6 +1,6 @@
 # Slicer
 
-Slicer is an Android JPEG compression app built with Kotlin, Jetpack Compose, and MozJPEG. This document records the current scalability and reliability problems in the image-processing pipeline and the intended solutions.
+Slicer is an Android JPEG compression app built with Kotlin, Jetpack Compose, and MozJPEG. This document records the historical pipeline baseline, implemented safeguards, and remaining scalability and reliability work.
 
 The immediate goal is to make batches containing hundreds of images safe, durable, responsive, and recoverable before expanding the app's feature set.
 
@@ -158,6 +158,8 @@ The destination document is also created before processing finishes. Failed comp
 - Treat cancellation as "stop after the current image" unless the native encoder gains safe interruption support.
 - Persist cancellation state so a cancelled batch is distinguishable from a crash or ordinary failure.
 
+MediaStore and SAF provide different publication guarantees. MediaStore supports hidden pending rows, but SAF has no equivalent transaction or pending-document state. A SAF provider can expose a newly created document while it is being copied, rename it, or fail before returning its URI. The app therefore provides best-effort deletion plus deterministic startup/worker recovery for SAF outputs; it cannot guarantee that a partial SAF document is never briefly visible after process death.
+
 ### 6. Main-Thread Selection Validation
 
 #### Problem
@@ -192,7 +194,7 @@ Persisting URI permissions also does not currently make a batch durable because 
 - Surface permission failures to the user.
 - Enforce a batch-size policy if the platform grant limit can be reached.
 
-This avoids temporary source duplication but remains dependent on external providers and grant limits.
+This avoids temporary source duplication but remains dependent on external providers and Android's finite persisted-grant allowance. The exact practical allowance and provider behavior are outside the app's control, so the current implementation bounds a batch to 400 sources. Supporting larger durable batches reliably would require local source staging.
 
 #### Option B: Stage Inputs Locally
 
@@ -244,11 +246,13 @@ Before a batch starts, the app reads every existing filename in the output folde
 
 #### Solution
 
-- Avoid enumerating the complete destination folder.
+- Avoid enumerating the complete destination folder for filename collision detection. The worker now uses a deterministic source-name, batch-token, and item-position suffix instead.
 - Generate collision-resistant names using the source name and a short batch-specific suffix, or query only the exact candidate name.
 - Keep an in-memory set only for names created by the active batch.
 - Consider an optional per-batch subfolder if that matches the intended user experience.
 - Handle provider-side automatic renaming by reading the actual created document name when necessary.
+
+SAF does not provide a reliable cross-provider exact-name lookup or transactional create-and-journal operation. Destination availability checks and recovery of a document created before its URI reached Room may still query the provider's child collection for an item-specific marker. This recovery scan is a platform/provider tradeoff, not the old collision-avoidance strategy, and its cost can still depend on folder size.
 
 ### 11. Release Optimization
 
@@ -344,7 +348,7 @@ Compose screens should receive immutable state from a `ViewModel`:
 - Current batch identity and state.
 - Current item name and overall progress.
 - Incremental summary counters.
-- A lazy stream of result rows.
+- A Room-backed paged stream of result rows.
 - Recoverable errors and required user actions.
 
 Navigation should not determine whether processing continues. Returning to the app should reconnect to the active or latest batch.
@@ -358,7 +362,7 @@ With the target architecture:
 - Only one large source is actively decoded by default.
 - Peak memory is bounded by the optimized per-image pipeline.
 - Progress continues through a foreground worker when the app is backgrounded.
-- Cancellation stops queue advancement and does not publish partial files.
+- Cancellation stops queue advancement. MediaStore outputs remain hidden until complete; SAF cleanup and recovery are best-effort because SAF cannot hide a document while it is being copied.
 - Completed results remain available without keeping the full collection in Compose memory.
 - Temporary inputs and outputs are cleaned deterministically.
 - Failed images do not prevent later queued images from being attempted.
@@ -375,7 +379,7 @@ With the target architecture:
 Phase 1 is complete when:
 
 - Pressing Start commits the batch and its source URI rows before slow provider metadata or destination enumeration begins.
-- The foreground worker prepares and processes persisted items one at a time.
+- The foreground worker prepares, claims, and processes persisted items one at a time.
 - Room is the source of truth for progress, results, cancellation, and interrupted-item recovery.
 - WorkManager owns system-stop retries, while application startup reconciles an unfinished Room queue with unique work.
 - Activity recreation reconnects to the persisted batch without restarting or duplicating it.
@@ -393,14 +397,14 @@ Temporary output publishing, scalable selection validation, URI staging or grant
 Phase 2 is complete when:
 
 - Compression, metadata preservation, and original-file fallback operate only on one deterministic app-private temporary file at a time.
-- A destination document is not created until the temporary output has passed processing validation.
+- A destination document is not created until the temporary output has passed processing validation, and output-creation intent is journaled before the provider call.
 - Default-folder MediaStore rows remain `IS_PENDING=1` until their complete contents have been written, then become visible with `IS_PENDING=0`.
-- SAF outputs use an item-specific recovery suffix because SAF has no pending-row transaction; the provider's actual created name is persisted with the result.
-- A failed or system-interrupted publication deletes its known MediaStore or SAF destination before the item can be retried.
-- Startup and worker recovery remove abandoned temporary files, orphaned pending MediaStore rows, and tracked incomplete destination documents.
+- SAF outputs use an item-specific recovery suffix because SAF has no pending-row transaction; the provider may rename the document, so its actual created name is persisted with the result.
+- A failed or system-interrupted publication attempts to delete its known MediaStore or SAF destination before the item can be retried. Work remains blocked when cleanup cannot be confirmed.
+- Startup and worker recovery remove abandoned temporary files, orphaned pending MediaStore rows, and tracked incomplete destination documents; queue advancement stops when cleanup cannot be confirmed.
 - User cancellation stops queue advancement after the current image, while a WorkManager stop cleans and requeues the interrupted image.
-- Transient file and provider failures retry at most three item attempts using fresh, exponentially delayed WorkManager requests.
-- If an incomplete output cannot be confirmed deleted, its item remains blocked in recoverable state and is never reused, overwritten, or requeued until cleanup succeeds.
+- Publication and other provider I/O failures marked retryable receive at most three item attempts using fresh, exponentially delayed WorkManager requests. Permission loss and processing validation failures are permanent. Narrower transient-provider classification remains future work.
+- A known incomplete output that cannot be confirmed deleted remains blocked and is never reused or overwritten. A pre-journal SAF recovery scans for the deterministic marker; a successful scan with no marker is treated as clean because SAF cannot identify a provider-renamed document whose URI was never returned to Room.
 
 ### Phase 3: Scalable Selection And Results
 
@@ -412,23 +416,27 @@ Phase 2 is complete when:
 
 Phase 3 is complete when:
 
-- The picker callback returns immediately while duplicate-free URI validation runs on bounded `Dispatchers.IO` concurrency with observable progress state.
+- The picker callback returns immediately while duplicate-free URI validation runs through four worker coroutines on bounded `Dispatchers.IO` concurrency with observable progress state and a 400-item validation cap.
 - Replacing a selection cancels the prior request logically, and a late provider response cannot overwrite the newer selection.
 - Unsupported and inaccessible files are reported separately after validation without blocking selection changes.
-- Source access uses a bounded persisted-URI policy: grants are acquired only after the batch and item rows exist, partial acquisition is rolled back, and a batch contains at most 400 source grants.
+- Source access uses a bounded persisted-URI policy: grants are acquired only after batch and item rows exist, an acquisition failure fails only its item while valid queued items retain their grants, and a batch contains at most 400 source grants.
 - Terminal source grants and legacy unowned document grants are released idempotently, while destination tree grants and sources still referenced by queued or processing items are retained.
 - Startup and manual recovery fail unfinished rows whose source grants were lost before enqueuing work, serialized with output cleanup so they cannot race a running worker.
-- Result rows render in one `LazyColumn` keyed by persisted item IDs, while summary counts and byte totals come from the batch record rather than scans during composition.
+- Result rows come from a bounded Room `PagingSource` and render in one `LazyColumn` keyed by persisted item IDs, while summary counts and byte totals come from the batch record rather than scans during composition.
 - Normal item transitions update persisted summary counters and byte totals by transactional deltas; full item scans are reserved for reconciliation boundaries.
 
-The selected policy keeps external source URIs rather than staging complete inputs locally. Source grants are not retained solely for comparison, so loading an original after process restart is best-effort once its item is terminal. Local staging remains a future option if batches beyond the persisted-grant policy are required.
+The selected policy keeps external source URIs rather than staging complete inputs locally. Source grants are not retained solely for comparison, so loading an original after process restart is best-effort once its item is terminal. Android and document providers control persisted-grant limits and behavior; local staging remains the reliable future option if batches beyond the 400-source policy are required.
 
 ### Phase 4: Memory-Safe Encoding
 
-- Remove full-image ARGB and RGB intermediate arrays.
-- Pass bitmap pixels directly to native encoding.
-- Write native output directly to a temporary file descriptor.
-- Add conservative memory checks and fallback behavior.
+- Compression streams full-resolution RGB rows from MozJPEG's decoder directly into its encoder. Android bitmaps are used only for previews and the platform validation fallback.
+- One fixed MozJPEG maximum-compression profile uses progressive output, scan optimization, trellis quantization, accurate DCT, the selected quality, and 4:2:0 subsampling. There are no speculative encoding retries or automatic quality/resolution reductions.
+- Both codecs share a memory budget derived from available system memory after reserves. The pinned codec is built with scoped allocation functions that charge both codecs, coefficient arrays, progressive scan buffers, trellis workspace, allocator headers, and transient buffer growth to one budget. A further 1 MiB is reserved for application/native I/O bookkeeping. This bounds codec-requested heap allocations, not total process RSS or system allocator overhead; allocation failure is still handled. Interrupted codec allocations are released after codec cleanup.
+- Java retains a 64 MiB coordination reserve without charging image pixels to its heap. There is no megapixel cutoff. Native JPEG format/implementation dimension limits still apply.
+- One compression call at a time is enforced with a coroutine mutex. Native row, input-read, and codec-progress checkpoints observe coroutine cancellation, including optimization passes. A blocking provider read must return before its next cancellation checkpoint.
+- Input descriptors support sequential pipes and asset offsets/lengths. Output goes directly to an app-private temporary descriptor. Borrowed descriptors remain owned by Kotlin.
+- Native results distinguish resource limits, invalid input, I/O failures, unsupported inputs, and cancellation. CMYK/YCCK and unsupported precisions are preserved rather than converted with an unverified color transform. RGB ICC and EXIF orientation keep their existing metadata policy.
+- Disk-backed coefficient storage is intentionally not implemented. Maximum optimization can still require substantial native RAM, particularly for progressive input; insufficient resources preserve the original.
 
 ### Phase 5: Streaming Metadata And Validation
 
@@ -439,13 +447,13 @@ The selected policy keeps external source URIs rather than staging complete inpu
 
 Phase 5 is complete when:
 
-- Source dimensions are read from a cancellation-aware, bounded JPEG header scan and checked again against the decoded bitmap before encoding.
-- Every native attempt must contain a complete, dimension-matching JPEG structure, including valid progressive scans, entropy stuffing, restart markers, and a final EOI marker.
-- Normal first-attempt MozJPEG output is accepted without another bitmap decode; alternate attempts or an unexpected encoder profile retain one expensive visual safeguard.
+- Source dimensions are read from a cancellation-aware, bounded JPEG header scan and checked again against the native decoder header before encoding.
+- Prepared output must contain a marker-complete, dimension-matching JPEG with correctly framed entropy data and a final EOI marker. Successful `jpeg_finish_decompress` and `jpeg_finish_compress`, with input warnings treated as failures, are the entropy-completion authorities for the encoder path.
+- The single encoder profile is accepted without another full decode; color correspondence is exercised in regression tests rather than used as a heuristic production gate.
 - JFIF density, EXIF, ordered RGB ICC, IPTC/Photoshop, and comments are copied segment-by-segment without complete source, encoded, or merged JPEG byte arrays; linked or unknown APP payloads are omitted rather than retaining stale offsets.
 - Source Adobe APP14 data is not transplanted onto newly encoded color data; an encoder-owned APP14 segment is retained.
 - Metadata is written to a size-limited app-private sidecar, flushed, structurally validated, and atomically moved over the encoded temporary file so cancellation or failure cannot partially rewrite the canonical output.
-- Both compressed output and original-file fallback pass complete structural validation before publication; malformed or truncated originals are failed rather than copied to a user-visible destination.
+- Compressed output passes marker and encoder-completion checks before publication. Original-file fallback additionally passes warning-strict MozJPEG scanline decoding; if the native module is unavailable, a memory-admitted platform decode is required instead. Malformed or entropy-truncated originals are failed rather than copied to a user-visible destination.
 
 ### Phase 6: Measurement And Tuning
 
@@ -458,14 +466,24 @@ Phase 5 is complete when:
 The initial Phase 6 measurement baseline is implemented:
 
 - Worker items emit correlated stage timing, process CPU, sampled Java/native heap, memory-admission, and logical I/O metrics, with matching Perfetto sections.
-- Instrumentation covers 100, 400, and 1,000 persisted queue rows, 400-URI bounded validation, a 400-row lazy result list, configurable 100/500/1,000-image engine runs, and representative 12 MP and 24 MP pipelines.
-- The dedicated macrobenchmark module measures optimized cold startup and UI-state mapping with 400 results, plus frame and memory behavior while scrolling a 1,000-result data set.
-- Release and benchmark variants use R8 and resource optimization; the JNI class has an explicit verified keep rule.
-- Memory admission now separates Java-heap demand from native/process demand. The 24 MP and 12 MP low-RAM caps remain unchanged pending a wider device matrix.
+- Instrumentation covers 100, 400, and 1,000 in-memory Room queue rows, 400-URI bounded validation, a paged 400-row result list, configurable synthetic 100/500/1,000-image engine loops, and synthetic 12 MP and 24 MP pipelines.
+- The dedicated macrobenchmark module measures optimized cold startup, constant-size durable UI-state mapping, initial Room page loading with 400 results, and frame and memory behavior while paging through a 1,000-result data set.
+- Release and benchmark variants use R8 and resource optimization. Release assembly currently succeeds, but a project-specific JNI keep rule has not yet been added and verified on-device.
+- Memory admission separates Java-heap demand from native/process demand and falls back safely when headroom is insufficient. There is no fixed 24 MP or 12 MP low-RAM cap; tuning the device-aware policy requires a wider device matrix.
 - Item retries remain capped at three attempts with exponential 10-second and 20-second delays; permission loss is permanent rather than retried.
 - Full-image processing remains single-flight. Initial 24 MP measurements do not show safe headroom for a second encoder, and current lifecycle cleanup intentionally assumes one active item.
 
-See [BENCHMARKING.md](BENCHMARKING.md) for commands, metric definitions, the initial device run, and tuning rules. Multi-device release baselines and regression thresholds remain the next Phase 6 step.
+See [BENCHMARKING.md](BENCHMARKING.md) for commands, metric definitions, the initial device run, and tuning rules. Multi-device release baselines, realistic image corpora/providers, failure injection, and regression thresholds remain Phase 6 work.
+
+## Remaining Work
+
+- Display the unsupported, inaccessible, and over-cap selection counts already exposed by `HomeViewModel`.
+- Narrow retry classification so only failures known to be transient receive another item attempt.
+- Add and verify any project-specific R8/JNI keep rules required by optimized on-device builds.
+- Replace the routine SAF destination-availability `cursor.count` check with a bounded probe; retain marker scanning only for recovery cases where SAF returned no URI before process death.
+- Run instrumentation, process-restart, provider-failure, and macrobenchmark suites on representative physical devices and retain their artifacts.
+- Add realistic slow/cloud-provider, storage-full, permission-exhaustion, and multi-device low-memory coverage before defining release regression thresholds.
+- Consider local input staging only if durable batches larger than the current 400-source persisted-grant policy become a product requirement.
 
 ## Initial Engineering Priorities
 

@@ -35,13 +35,16 @@ class OutputLifecycleTest {
         val tempFile = context.createOutputTempFile("pending-test")
         tempFile.writeBytes(bytes)
         var pendingDuringCallback = -1
+        var creationJournaled = false
 
         val output = context.publishPreparedOutput(
             tempFile = tempFile,
             outputFolderUri = DEFAULT_OUTPUT_FOLDER_URI,
             outputName = "slicer-test-${UUID.randomUUID()}.jpg",
-            itemId = "pending-test"
+            itemId = "pending-test",
+            onOutputCreationStarting = { creationJournaled = true }
         ) { uri, _ ->
+            assertTrue(creationJournaled)
             createdUris += uri
             pendingDuringCallback = queryPending(uri)
         }
@@ -57,13 +60,15 @@ class OutputLifecycleTest {
         val tempFile = context.createOutputTempFile("callback-failure-test")
         tempFile.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte()))
         var provisionalUri: Uri? = null
+        var cleanupConfirmed = false
 
         val failure = runCatching {
             context.publishPreparedOutput(
                 tempFile = tempFile,
                 outputFolderUri = DEFAULT_OUTPUT_FOLDER_URI,
                 outputName = "slicer-test-${UUID.randomUUID()}.jpg",
-                itemId = "callback-failure-test"
+                itemId = "callback-failure-test",
+                onOutputCleanupConfirmed = { cleanupConfirmed = true }
             ) { uri, _ ->
                 provisionalUri = uri
                 throw IOException("Journal unavailable.")
@@ -72,6 +77,7 @@ class OutputLifecycleTest {
 
         assertTrue(failure is OutputPublicationException)
         assertTrue((failure as OutputPublicationException).cleanupSucceeded)
+        assertTrue(cleanupConfirmed)
         assertFalse(outputExists(requireNotNull(provisionalUri)))
     }
 

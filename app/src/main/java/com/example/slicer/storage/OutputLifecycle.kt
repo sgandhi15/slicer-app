@@ -4,6 +4,7 @@ import com.example.slicer.core.DEFAULT_COPY_BUFFER_BYTES
 import com.example.slicer.core.DEFAULT_OUTPUT_RELATIVE_PATH
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.OUTPUT_MIME_TYPE
+import com.example.slicer.core.RetryableFailure
 
 import android.content.ContentUris
 import android.content.ContentValues
@@ -39,7 +40,7 @@ internal class OutputPublicationException(
     cause: Throwable,
     val incompleteUri: Uri?,
     val cleanupSucceeded: Boolean
-) : IOException(message, cause)
+) : IOException(message, cause), RetryableFailure
 
 internal suspend fun <T> withOutputLifecycleLock(block: suspend () -> T): T {
     return outputLifecycleMutex.withLock { block() }
@@ -82,6 +83,8 @@ internal suspend fun Context.publishPreparedOutput(
     outputFolderUri: Uri,
     outputName: String,
     itemId: String,
+    onOutputCreationStarting: suspend () -> Unit = {},
+    onOutputCleanupConfirmed: suspend () -> Unit = {},
     onOutputCreated: suspend (Uri, String) -> Unit
 ): PublishedOutput = withContext(Dispatchers.IO) {
     require(tempFile.isFile && tempFile.length() > 0L) {
@@ -92,22 +95,34 @@ internal suspend fun Context.publishPreparedOutput(
     val isMediaStoreOutput = outputFolderUri.isDefaultOutputFolder()
     try {
         currentCoroutineContext().ensureActive()
-        val outputUri = if (isMediaStoreOutput) {
-            createPendingMediaStoreOutput(outputName)
-        } else {
-            createSafOutput(outputFolderUri, recoverableSafOutputName(outputName, itemId))
+        val requestedName = if (isMediaStoreOutput) outputName else recoverableSafOutputName(outputName, itemId)
+        val outputUri = withContext(NonCancellable) {
+            onOutputCreationStarting()
+            val uri = if (isMediaStoreOutput) {
+                createPendingMediaStoreOutput(requestedName)
+            } else {
+                createSafOutput(outputFolderUri, requestedName)
+            }
+            createdUri = uri
+            onOutputCreated(uri, requestedName)
+            uri
         }
-        createdUri = outputUri
 
         val actualName = resolveDisplayName(outputUri)
-        withContext(NonCancellable) {
-            onOutputCreated(outputUri, actualName)
+        if (actualName != requestedName) {
+            withContext(NonCancellable) {
+                onOutputCreated(outputUri, actualName)
+            }
         }
         currentCoroutineContext().ensureActive()
 
         val copiedBytes = copyPreparedFile(tempFile, outputUri)
         if (copiedBytes != tempFile.length()) {
             throw IOException("Published output size did not match the prepared image.")
+        }
+        val destinationBytes = resolveContentSize(outputUri)
+        if (destinationBytes >= 0L && destinationBytes != copiedBytes) {
+            throw IOException("The destination did not retain the complete prepared image.")
         }
 
         if (isMediaStoreOutput) {
@@ -123,15 +138,35 @@ internal suspend fun Context.publishPreparedOutput(
         val cleaned = withContext(NonCancellable + Dispatchers.IO) {
             createdUri?.let(::deleteOutputDocument) ?: true
         }
-        if (!cleaned) {
+        val journalCleared = if (cleaned && createdUri != null) {
+            runCatching { withContext(NonCancellable) { onOutputCleanupConfirmed() } }
+                .onFailure(cancelled::addSuppressed)
+                .isSuccess
+        } else {
+            false
+        }
+        if (!cleaned || (createdUri != null && !journalCleared)) {
             cancelled.addSuppressed(IOException("Could not remove incomplete output $createdUri."))
         }
         throw cancelled
     } catch (error: Exception) {
+        val creationWasRejected = error is OutputCreationNotPerformedException
         val cleaned = withContext(NonCancellable + Dispatchers.IO) {
-            createdUri?.let(::deleteOutputDocument) ?: true
+            when {
+                createdUri != null -> deleteOutputDocument(requireNotNull(createdUri))
+                creationWasRejected -> true
+                else -> false
+            }
         }
-        val message = if (cleaned) {
+        val journalCleared = if (cleaned) {
+            runCatching { withContext(NonCancellable) { onOutputCleanupConfirmed() } }
+                .onFailure(error::addSuppressed)
+                .isSuccess
+        } else {
+            false
+        }
+        val cleanupSucceeded = cleaned && journalCleared
+        val message = if (cleanupSucceeded) {
             "Could not publish output '$outputName'."
         } else {
             "Could not publish or remove incomplete output '$outputName'."
@@ -139,8 +174,8 @@ internal suspend fun Context.publishPreparedOutput(
         throw OutputPublicationException(
             message = message,
             cause = error,
-            incompleteUri = createdUri.takeUnless { cleaned },
-            cleanupSucceeded = cleaned
+            incompleteUri = createdUri.takeUnless { cleanupSucceeded },
+            cleanupSucceeded = cleanupSucceeded
         )
     }
 }
@@ -194,7 +229,7 @@ internal fun Context.deleteOutputDocument(uri: Uri): Boolean {
         } else {
             contentResolver.delete(uri, null, null) > 0
         }
-        deleted || !outputDocumentExists(uri)
+        deleted || outputDocumentExists(uri) == false
     } catch (_: FileNotFoundException) {
         true
     } catch (error: Exception) {
@@ -250,7 +285,7 @@ private fun Context.createPendingMediaStoreOutput(fileName: String): Uri {
     }
     val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
     return contentResolver.insert(collection, values)
-        ?: throw IOException("Could not create pending MediaStore output.")
+        ?: throw OutputCreationNotPerformedException("Could not create pending MediaStore output.")
 }
 
 private fun Context.createSafOutput(outputFolderUri: Uri, fileName: String): Uri {
@@ -263,8 +298,10 @@ private fun Context.createSafOutput(outputFolderUri: Uri, fileName: String): Uri
         folderDocumentUri,
         OUTPUT_MIME_TYPE,
         fileName.ifBlank { "image.jpg" }
-    ) ?: throw IOException("Could not create output in the selected folder.")
+    ) ?: throw OutputCreationNotPerformedException("Could not create output in the selected folder.")
 }
+
+private class OutputCreationNotPerformedException(message: String) : IOException(message)
 
 private fun recoverableSafOutputName(outputName: String, itemId: String): String {
     val dot = outputName.lastIndexOf('.')
@@ -317,12 +354,18 @@ private suspend fun Context.copyPreparedFile(source: File, destinationUri: Uri):
     }
 }
 
-private fun Context.outputDocumentExists(uri: Uri): Boolean {
+private fun Context.outputDocumentExists(uri: Uri): Boolean? {
     return try {
-        contentResolver.openInputStream(uri)?.use { } != null
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor -> cursor.moveToFirst() }
     } catch (_: FileNotFoundException) {
         false
     } catch (_: Exception) {
-        true
+        null
     }
 }

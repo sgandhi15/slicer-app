@@ -1,72 +1,52 @@
 package com.example.slicer.processing
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import androidx.core.graphics.get
+import android.graphics.ImageDecoder
 import java.io.File
+import java.io.IOException
 
-internal fun File.isVisuallyConsistentJpeg(
-    expectedWidth: Int,
-    expectedHeight: Int,
-    sourceBitmap: Bitmap
-): Boolean {
-    if (!isFile || length() <= 0L) {
-        return false
-    }
-
-    return validateDecodedJpeg(
-        decoded = runCatching { BitmapFactory.decodeFile(absolutePath) }.getOrNull(),
-        expectedWidth = expectedWidth,
-        expectedHeight = expectedHeight,
-        sourceBitmap = sourceBitmap
-    )
+internal enum class PlatformJpegValidationResult {
+    Valid,
+    InvalidData,
+    IoFailure,
+    ResourceLimit
 }
 
-private fun validateDecodedJpeg(
-    decoded: Bitmap?,
-    expectedWidth: Int,
-    expectedHeight: Int,
-    sourceBitmap: Bitmap
-): Boolean {
-    decoded ?: return false
+internal fun File.validateJpegWithPlatformDecoder(
+    expectedDimensions: JpegDimensions
+): PlatformJpegValidationResult {
+    if (!isFile || length() <= 0L) return PlatformJpegValidationResult.InvalidData
     return try {
-        if (decoded.width != expectedWidth || decoded.height != expectedHeight) {
-            return false
+        val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(this)) { decoder, info, _ ->
+            check(
+                info.size.width == expectedDimensions.width &&
+                    info.size.height == expectedDimensions.height
+            ) { "JPEG dimensions changed during validation." }
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            decoder.setTargetSampleSize(
+                sampleSizeForComparison(expectedDimensions.width, expectedDimensions.height)
+            )
         }
-
-        val sourceSpread = sourceBitmap.sampleLumaRange()
-        val decodedSpread = decoded.sampleLumaRange()
-        sourceSpread <= 4 || decodedSpread >= 8 || decodedSpread >= sourceSpread / 4
-    } finally {
-        decoded.recycle()
+        bitmap.recycle()
+        PlatformJpegValidationResult.Valid
+    } catch (_: OutOfMemoryError) {
+        PlatformJpegValidationResult.ResourceLimit
+    } catch (error: ImageDecoder.DecodeException) {
+        if (error.error == ImageDecoder.DecodeException.SOURCE_EXCEPTION) {
+            PlatformJpegValidationResult.IoFailure
+        } else {
+            PlatformJpegValidationResult.InvalidData
+        }
+    } catch (_: IOException) {
+        PlatformJpegValidationResult.IoFailure
+    } catch (_: Exception) {
+        PlatformJpegValidationResult.InvalidData
     }
 }
 
-internal fun Bitmap.sampleLumaRange(): Int {
-    val sampleCols = 16
-    val sampleRows = 16
-    val stepX = maxOf(1, width / sampleCols)
-    val stepY = maxOf(1, height / sampleRows)
-
-    var minLuma = 255
-    var maxLuma = 0
-
-    var y = 0
-    while (y < height) {
-        var x = 0
-        while (x < width) {
-            val pixel = this[x, y]
-            val luma = (((pixel ushr 16) and 0xFF) * 299 +
-                ((pixel ushr 8) and 0xFF) * 587 +
-                (pixel and 0xFF) * 114) / 1000
-
-            minLuma = minOf(minLuma, luma)
-            maxLuma = maxOf(maxLuma, luma)
-
-            x += stepX
-        }
-        y += stepY
-    }
-
-    return maxLuma - minLuma
+private fun sampleSizeForComparison(width: Int, height: Int): Int {
+    var sampleSize = 1
+    while (maxOf(width, height) / sampleSize > MAX_COMPARISON_DIMENSION) sampleSize *= 2
+    return sampleSize
 }
+
+private const val MAX_COMPARISON_DIMENSION = 128

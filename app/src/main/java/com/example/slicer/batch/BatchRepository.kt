@@ -12,6 +12,10 @@ import androidx.work.WorkRequest
 import androidx.work.WorkManager
 import androidx.work.await
 import androidx.work.workDataOf
+import androidx.core.net.toUri
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.storage.AndroidSourceUriPermissionStore
 import com.example.slicer.storage.OutputFolderAccess
@@ -34,7 +38,8 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 internal data class BatchArtifactCleanupReport(
-    val blockedProcessingItemIds: Set<String>
+    val blockedProcessingItemIds: Set<String>,
+    val temporaryOutputsCleaned: Boolean
 )
 
 internal class BatchRepository(
@@ -47,7 +52,18 @@ internal class BatchRepository(
 
     fun observeLatestBatch(): Flow<BatchEntity?> = dao.observeLatestBatch()
 
-    fun observeItems(batchId: String): Flow<List<BatchItemEntity>> = dao.observeItems(batchId)
+    fun observeCurrentItem(batchId: String): Flow<BatchItemEntity?> = dao.observeCurrentItem(batchId)
+
+    fun pagedResults(batchId: String): Flow<PagingData<BatchItemEntity>> = Pager(
+        config = PagingConfig(
+            pageSize = RESULT_PAGE_SIZE,
+            initialLoadSize = RESULT_PAGE_SIZE,
+            prefetchDistance = RESULT_PREFETCH_DISTANCE,
+            enablePlaceholders = false,
+            maxSize = RESULT_MAX_LOADED_ITEMS
+        ),
+        pagingSourceFactory = { dao.pagingResults(batchId) }
+    ).flow
 
     suspend fun createAndEnqueueBatch(
         sourceUris: List<Uri>,
@@ -106,19 +122,32 @@ internal class BatchRepository(
                 return batchId
             }
 
-            val missingPermissions = distinctSourceUris.filterNot { uri ->
-                hasDurableReadPermission(uri, readablePersistedUris)
+            items.zip(distinctSourceUris).forEach { (item, uri) ->
+                if (cancellationRequested() || dao.getBatch(batchId)?.cancellationRequested == true) {
+                    dao.requestCancellation(batchId)
+                    reconcileSourcePermissionsLocked()
+                    return batchId
+                }
+                if (!hasDurableReadPermission(uri, readablePersistedUris)) {
+                    dao.failUnfinishedItem(
+                        itemId = item.id,
+                        batchId = batchId,
+                        message = "Durable source access could not be saved. Select this file again."
+                    )
+                }
             }
-            if (missingPermissions.isNotEmpty()) {
-                dao.failBatch(
-                    batchId,
-                    "Durable access could not be saved for ${missingPermissions.size} selected file(s). Select them again."
-                )
+            dao.finishBatch(batchId)
+            if (dao.getBatch(batchId)?.state?.isTerminal == true) {
                 reconcileSourcePermissionsLocked()
                 return batchId
             }
 
             sourceAccessReady = true
+            if (cancellationRequested() || dao.getBatch(batchId)?.cancellationRequested == true) {
+                dao.requestCancellation(batchId)
+                reconcileSourcePermissionsLocked()
+                return batchId
+            }
             enqueue(batchId)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
@@ -172,19 +201,19 @@ internal class BatchRepository(
     }
 
     suspend fun requestCancellation(batchId: String) = withContext(Dispatchers.IO) {
-        sourceLifecycleMutex.withLock {
+        withContext(NonCancellable) {
             val changed = dao.requestCancellation(batchId)
-            reconcileSourcePermissionsLocked()
-            if (changed && dao.getProcessingItems(batchId).isNotEmpty()) {
-                try {
-                    enqueueCleanup(batchId)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    dao.recordActiveError(
-                        batchId,
-                        error.message ?: "Could not schedule incomplete-output cleanup."
-                    )
+            sourceLifecycleMutex.withLock {
+                reconcileSourcePermissionsLocked()
+                if (changed && dao.getProcessingItems(batchId).isNotEmpty()) {
+                    try {
+                        enqueueCleanup(batchId)
+                    } catch (error: Exception) {
+                        dao.recordActiveError(
+                            batchId,
+                            error.message ?: "Could not schedule incomplete-output cleanup."
+                        )
+                    }
                 }
             }
         }
@@ -242,12 +271,22 @@ internal class BatchRepository(
             val cleaned = when {
                 destinationUri == null -> false
                 destinationUri.isDefaultOutputFolder() -> pendingMediaStoreOutputsCleaned
-                else -> context.cleanupUntrackedSafOutput(destinationUri, item.id)
+                else -> context.cleanupUntrackedSafOutput(
+                    outputFolderUri = destinationUri,
+                    itemId = item.id
+                )
             }
-            if (!cleaned) blockedItemIds += item.id
+            if (!cleaned) {
+                blockedItemIds += item.id
+            } else if (item.outputCleanupPending) {
+                dao.clearIncompleteOutputUri(item.id, item.batchId)
+            }
         }
 
-        BatchArtifactCleanupReport(blockedItemIds)
+        BatchArtifactCleanupReport(
+            blockedProcessingItemIds = blockedItemIds,
+            temporaryOutputsCleaned = temporaryOutputsCleaned
+        )
     }
 
     suspend fun scheduleItemRetry(batchId: String, attemptCount: Int) {
@@ -305,21 +344,21 @@ internal class BatchRepository(
         blockedProcessingItemIds: Set<String> = emptySet()
     ) {
         val persistedUris = sourceUriPermissions.persistedReadUris()
-        val blockedBatchIds = blockedProcessingItemIds.mapNotNullTo(mutableSetOf()) { itemId ->
-            dao.getItem(itemId)?.batchId
-        }
-        val missingByBatch = dao.getItemsRequiringSourcePermission()
+        val missingItems = dao.getItemsRequiringSourcePermission()
             .filter { item ->
-                val sourceUri = Uri.parse(item.sourceUri)
+                val sourceUri = item.sourceUri.toUri()
                 sourceUri.requiresPersistedReadPermission() && sourceUri !in persistedUris
             }
-            .groupBy(BatchItemEntity::batchId)
-        missingByBatch.forEach { (batchId, items) ->
-            if (batchId in blockedBatchIds) return@forEach
-            dao.failBatch(
-                batchId,
-                "Durable source access is no longer available for ${items.size} file(s). Select them again."
+        missingItems.forEach { item ->
+            if (item.id in blockedProcessingItemIds) return@forEach
+            dao.failUnfinishedItem(
+                itemId = item.id,
+                batchId = item.batchId,
+                message = "Durable source access is no longer available. Select this file again."
             )
+        }
+        missingItems.map(BatchItemEntity::batchId).distinct().forEach { batchId ->
+            dao.finishBatch(batchId)
         }
     }
 
@@ -383,6 +422,9 @@ internal class BatchRepository(
     private companion object {
         const val MAX_PERSISTED_SOURCES_PER_BATCH = 400
         const val PERSISTED_URI_GRANT_BUDGET = 480
+        const val RESULT_PAGE_SIZE = 50
+        const val RESULT_PREFETCH_DISTANCE = 10
+        const val RESULT_MAX_LOADED_ITEMS = 150
     }
 
 }

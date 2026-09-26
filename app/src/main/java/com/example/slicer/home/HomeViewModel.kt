@@ -7,6 +7,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.core.net.toUri
+import androidx.paging.PagingData
+import androidx.paging.cachedIn
+import androidx.paging.map as mapPagingData
 import com.example.slicer.SlicerApplication
 import com.example.slicer.batch.BatchEntity
 import com.example.slicer.batch.BatchItemEntity
@@ -23,12 +26,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -49,31 +54,14 @@ internal data class ImageSelectionUiState(
     val totalCount: Int = 0,
     val unsupportedUris: List<Uri> = emptyList(),
     val inaccessibleUris: List<Uri> = emptyList(),
+    val ignoredCount: Int = 0,
     internal val requestId: Long = 0L
-) {
-    val notice: String?
-        get() {
-            if (isValidating || totalCount == 0) return null
-            val rejectedCount = unsupportedUris.size + inaccessibleUris.size
-            if (rejectedCount == 0) return null
-
-            val reasons = buildList {
-                if (unsupportedUris.isNotEmpty()) add("${unsupportedUris.size} unsupported")
-                if (inaccessibleUris.isNotEmpty()) add("${inaccessibleUris.size} inaccessible")
-            }.joinToString(" and ")
-            return if (selectedImages.isEmpty()) {
-                "No supported files selected. Skipped $reasons."
-            } else {
-                "${selectedImages.size} files selected. Skipped $reasons."
-            }
-        }
-}
+)
 
 internal data class DurableBatchUiState(
     val batchId: String? = null,
     val batchState: BatchState? = null,
     val progress: ProcessingProgress = ProcessingProgress(),
-    val results: List<BatchFileResult> = emptyList(),
     val totalInputBytes: Long = 0L,
     val totalOutputBytes: Long = 0L,
     val totalSavedBytes: Long = 0L,
@@ -125,7 +113,7 @@ internal class HomeViewModel internal constructor(
         if (batch == null) {
             flowOf(null)
         } else {
-            repository.observeItems(batch.id).map { items -> batch to items }
+            repository.observeCurrentItem(batch.id).map { currentItem -> batch to currentItem }
         }
     }
 
@@ -136,51 +124,77 @@ internal class HomeViewModel internal constructor(
         startError
     ) { persisted, dismissedId, starting, error ->
         val batch = persisted?.first?.takeUnless { it.id == dismissedId }
-        val items = if (batch == null) emptyList() else persisted.second
-        batch.toUiState(items, starting, error)
+        val currentItem = if (batch == null) null else persisted.second
+        batch.toUiState(currentItem, starting, error)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = DurableBatchUiState()
     )
 
+    val resultPages = repository.observeLatestBatch()
+        .map { batch -> batch?.id }
+        .distinctUntilChanged()
+        .flatMapLatest { batchId ->
+            if (batchId == null) {
+                flowOf(PagingData.empty<BatchItemEntity>())
+            } else {
+                repository.pagedResults(batchId)
+            }
+        }
+        .map { pagingData -> pagingData.mapPagingData { item -> item.toResult() } }
+        .cachedIn(viewModelScope)
+
     fun validateImageSelection(uris: List<Uri>) {
         if (uris.isEmpty()) return
 
-        val distinctUris = uris.distinct()
         val requestId = selectionRequestIds.incrementAndGet()
         selectionValidationJob?.cancel()
         saveSelectedImages(emptyList())
         _selectionState.value = ImageSelectionUiState(
             isValidating = true,
-            totalCount = distinctUris.size,
+            totalCount = minOf(uris.size, MAX_SELECTED_IMAGES),
             requestId = requestId
         )
 
         selectionValidationJob = viewModelScope.launch {
+            val distinctUris = withContext(Dispatchers.Default) { uris.distinct() }
+            val acceptedUris = distinctUris.take(MAX_SELECTED_IMAGES)
+            val ignoredCount = distinctUris.size - acceptedUris.size
+            _selectionState.update { state ->
+                if (state.requestId == requestId) {
+                    state.copy(totalCount = acceptedUris.size, ignoredCount = ignoredCount)
+                } else {
+                    state
+                }
+            }
             val completedCount = AtomicInteger(0)
             val outcomes = supervisorScope {
-                distinctUris.map { uri ->
+                val nextIndex = AtomicInteger(0)
+                val results = arrayOfNulls<Pair<Uri, ImageSelectionOutcome>>(acceptedUris.size)
+                List(minOf(MAX_SELECTION_VALIDATION_CONCURRENCY, acceptedUris.size)) {
                     async(validationDispatcher) {
-                        val outcome = try {
-                            imageSelectionValidator.validate(uri)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            ImageSelectionOutcome.Inaccessible
-                        }
-                        currentCoroutineContext().ensureActive()
-                        val completed = completedCount.incrementAndGet()
-                        _selectionState.update { state ->
-                            if (state.requestId != requestId) {
-                                state
-                            } else {
-                                state.copy(validatedCount = maxOf(state.validatedCount, completed))
+                        while (true) {
+                            val index = nextIndex.getAndIncrement()
+                            if (index >= acceptedUris.size) break
+                            val uri = acceptedUris[index]
+                            val outcome = try {
+                                imageSelectionValidator.validate(uri)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                ImageSelectionOutcome.Inaccessible
+                            }
+                            currentCoroutineContext().ensureActive()
+                            results[index] = uri to outcome
+                            val completed = completedCount.incrementAndGet()
+                            _selectionState.update { state ->
+                                if (state.requestId != requestId) state else state.copy(validatedCount = completed)
                             }
                         }
-                        uri to outcome
                     }
                 }.awaitAll()
+                results.filterNotNull()
             }
 
             val selectedImages = outcomes.mapNotNull { (uri, outcome) ->
@@ -199,7 +213,7 @@ internal class HomeViewModel internal constructor(
                     state.copy(
                         selectedImages = selectedImages,
                         isValidating = false,
-                        validatedCount = distinctUris.size,
+                        validatedCount = acceptedUris.size,
                         unsupportedUris = unsupportedUris,
                         inaccessibleUris = inaccessibleUris
                     )
@@ -302,14 +316,12 @@ internal class HomeViewModel internal constructor(
 }
 
 private fun BatchEntity?.toUiState(
-    items: List<BatchItemEntity>,
+    currentItem: BatchItemEntity?,
     isStarting: Boolean,
     error: String?
 ): DurableBatchUiState = traceUiStateMapping {
     if (this == null) return@traceUiStateMapping DurableBatchUiState(isStarting = isStarting, error = error)
 
-    val currentItem = items.firstOrNull { it.state == BatchItemState.Processing }
-    val results = items.filter { it.state.isTerminal }.map { it.toResult() }
     val status = when (state) {
         BatchState.Queued -> "Preparing batch..."
         BatchState.Running -> "Compressing images..."
@@ -337,7 +349,6 @@ private fun BatchEntity?.toUiState(
             cancelledCount = cancelledCount,
             currentFile = currentItem?.inputName
         ),
-        results = results,
         totalInputBytes = totalInputBytes,
         totalOutputBytes = totalOutputBytes,
         totalSavedBytes = totalSavedBytes,
@@ -357,6 +368,7 @@ private inline fun <T> traceUiStateMapping(block: () -> T): T {
 }
 
 private const val UI_STATE_MAPPING_TRACE = "Slicer UI state"
+internal const val MAX_SELECTED_IMAGES = 400
 
 private fun BatchItemEntity.toResult(): BatchFileResult = BatchFileResult(
     id = id,

@@ -64,55 +64,40 @@ class EncodingMemoryPolicyTest {
     }
 
     @Test
-    fun appliesSmallerPixelLimitOnLowRamDevices() {
-        val regularDevice = evaluateEncodingMemory(
-            width = 5_000,
-            height = 3_000,
+    fun allowsFiftyMegapixelImageWhenMemoryHeadroomIsComfortable() {
+        val decision = evaluateEncodingMemory(
+            width = 10_000,
+            height = 5_000,
             snapshot = ampleMemory()
         )
-        val lowRamDevice = evaluateEncodingMemory(
-            width = 5_000,
-            height = 3_000,
-            snapshot = ampleMemory().copy(isLowRamDevice = true)
-        )
 
-        assertTrue(regularDevice.canEncode)
-        assertFalse(lowRamDevice.canEncode)
-        assertEquals(EncodingMemoryRejection.ImageTooLarge, lowRamDevice.rejection)
+        assertTrue(decision.canEncode)
+        assertEquals(800_000_000L, decision.estimatedPeakBytes)
+        assertEquals(200_000_000L, decision.estimatedAppHeapBytes)
     }
 
     @Test
-    fun allowsExactRegularAndLowRamPixelLimits() {
-        val regularDevice = evaluateEncodingMemory(
-            width = 6_000,
-            height = 4_000,
-            snapshot = ampleMemory()
-        )
-        val lowRamDevice = evaluateEncodingMemory(
-            width = 4_000,
-            height = 3_000,
-            snapshot = ampleMemory().copy(isLowRamDevice = true)
+    fun rejectsFiftyMegapixelImageWhenMemoryHeadroomIsInsufficient() {
+        val decision = evaluateEncodingMemory(
+            width = 10_000,
+            height = 5_000,
+            snapshot = ampleMemory().copy(appAvailableBytes = 250L * 1024L * 1024L)
         )
 
-        assertTrue(regularDevice.canEncode)
-        assertTrue(lowRamDevice.canEncode)
+        assertFalse(decision.canEncode)
+        assertEquals(EncodingMemoryRejection.InsufficientAppMemory, decision.rejection)
     }
 
     @Test
-    fun rejectsOnePixelBeyondRegularAndLowRamLimits() {
-        val regularDevice = evaluateEncodingMemory(
-            width = 24_000_001,
+    fun rejectsDimensionsBeyondJpegFormatLimit() {
+        val decision = evaluateEncodingMemory(
+            width = 65_536,
             height = 1,
             snapshot = ampleMemory()
         )
-        val lowRamDevice = evaluateEncodingMemory(
-            width = 12_000_001,
-            height = 1,
-            snapshot = ampleMemory().copy(isLowRamDevice = true)
-        )
 
-        assertEquals(EncodingMemoryRejection.ImageTooLarge, regularDevice.rejection)
-        assertEquals(EncodingMemoryRejection.ImageTooLarge, lowRamDevice.rejection)
+        assertFalse(decision.canEncode)
+        assertEquals(EncodingMemoryRejection.ImageTooLarge, decision.rejection)
     }
 
     @Test
@@ -132,7 +117,6 @@ class EncodingMemoryPolicyTest {
         appAvailableBytes = 2L * 1024L * 1024L * 1024L,
         systemAvailableBytes = 4L * 1024L * 1024L * 1024L,
         systemLowMemoryThresholdBytes = 128L * 1024L * 1024L,
-        isSystemLowMemory = false,
-        isLowRamDevice = false
+        isSystemLowMemory = false
     )
 }

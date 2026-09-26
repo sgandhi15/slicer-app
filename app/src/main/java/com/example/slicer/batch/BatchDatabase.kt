@@ -11,7 +11,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [BatchEntity::class, BatchItemEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 @TypeConverters(BatchConverters::class)
@@ -30,12 +30,38 @@ internal abstract class BatchDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `batch_items` ADD COLUMN `savedBytes` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `batch_items` ADD COLUMN `width` INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE `batch_items` ADD COLUMN `height` INTEGER NOT NULL DEFAULT -1")
+                db.execSQL(
+                    "ALTER TABLE `batch_items` ADD COLUMN `outputCleanupPending` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    """
+                    UPDATE `batch_items`
+                    SET `savedBytes` = `inputBytes` - `outputBytes`
+                    WHERE `state` IN ('Compressed', 'CopiedOriginal')
+                        AND `outputBytes` >= 0 AND `inputBytes` > `outputBytes`
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `batch_items`
+                    SET `outputCleanupPending` = 1
+                    WHERE `state` = 'Processing' AND `outputUri` IS NULL
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun create(context: Context): BatchDatabase = Room.databaseBuilder(
             context.applicationContext,
             BatchDatabase::class.java,
             "slicer-batches.db"
         )
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
     }
 }

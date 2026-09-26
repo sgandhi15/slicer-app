@@ -1,6 +1,7 @@
 package com.example.slicer.batch
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -91,8 +92,12 @@ internal data class BatchItemEntity(
     val attemptCount: Int = 0,
     val inputBytes: Long = -1L,
     val outputBytes: Long = -1L,
+    @ColumnInfo(defaultValue = "0") val savedBytes: Long = 0L,
+    @ColumnInfo(defaultValue = "-1") val width: Int = -1,
+    @ColumnInfo(defaultValue = "-1") val height: Int = -1,
     val message: String? = null,
-    val actualOutputName: String? = null
+    val actualOutputName: String? = null,
+    @ColumnInfo(defaultValue = "0") val outputCleanupPending: Boolean = false
 )
 
 internal data class BatchItemSummary(

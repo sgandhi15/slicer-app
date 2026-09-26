@@ -15,13 +15,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +32,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.itemContentType
+import androidx.paging.compose.itemKey
+import androidx.paging.LoadState
 
 @Composable
 internal fun ProcessingPanel(
@@ -134,7 +140,7 @@ private fun ProcessingStat(
 
 @Composable
 internal fun BatchResultsPanel(
-    results: List<BatchFileResult>,
+    results: LazyPagingItems<BatchFileResult>,
     summary: ProcessingProgress,
     totalInputBytes: Long,
     totalOutputBytes: Long,
@@ -142,9 +148,21 @@ internal fun BatchResultsPanel(
     onResultClick: (BatchFileResult) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (results.isEmpty()) {
-        NoticeText("No results yet.")
-        return
+    when (val refresh = results.loadState.refresh) {
+        is LoadState.Loading -> if (results.itemCount == 0) {
+            Column(
+                modifier = modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator()
+            }
+            return
+        }
+        is LoadState.Error -> if (results.itemCount == 0) {
+            PagingFailure(refresh.error.message ?: "Could not load results.", results::retry)
+            return
+        }
+        is LoadState.NotLoading -> Unit
     }
 
     val totalSavedPercent = if (summary.failedCount == 0 && summary.cancelledCount == 0) {
@@ -222,11 +240,32 @@ internal fun BatchResultsPanel(
             }
         }
 
-        itemsIndexed(
-            items = results,
-            key = { _, result -> "result-${result.id}" },
-            contentType = { _, result -> result.decision }
-        ) { index, result ->
+        (results.loadState.refresh as? LoadState.Error)?.let { refresh ->
+            item(key = "result-refresh-error") {
+                PagingFailure(refresh.error.message ?: "Could not refresh results.", results::retry)
+            }
+        }
+        when (val prepend = results.loadState.prepend) {
+            is LoadState.Loading -> item(key = "result-prepend-loading") {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is LoadState.Error -> item(key = "result-prepend-error") {
+                PagingFailure(prepend.error.message ?: "Could not load earlier results.", results::retry)
+            }
+            is LoadState.NotLoading -> Unit
+        }
+
+        items(
+            count = results.itemCount,
+            key = results.itemKey { result -> "result-${result.id}" },
+            contentType = results.itemContentType { result -> result.decision }
+        ) { index ->
+            val result = results[index] ?: return@items
             if (index > 0) {
                 HorizontalDivider(thickness = 1.dp)
             }
@@ -242,9 +281,38 @@ internal fun BatchResultsPanel(
                 }
             )
         }
+        when (val append = results.loadState.append) {
+            is LoadState.Loading -> item(key = "result-page-loading") {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is LoadState.Error -> item(key = "result-page-error") {
+                PagingFailure(append.error.message ?: "Could not load more results.", results::retry)
+            }
+            is LoadState.NotLoading -> Unit
+        }
         item(key = "result-list-bottom-space") {
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+}
+
+@Composable
+private fun PagingFailure(message: String, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+        TextButton(onClick = onRetry) { Text("Retry") }
     }
 }
 

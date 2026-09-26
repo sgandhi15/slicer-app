@@ -1,24 +1,23 @@
 package com.example.slicer.processing
 
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_422
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_444
-import com.example.slicer.storage.loadBitmapForCompression
 import com.example.slicer.telemetry.MeasuredInputStream
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
 import com.example.slicer.telemetry.ProcessingStage
 import com.example.slicer.telemetry.logMozJpegEventTelemetry
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.function.BooleanSupplier
 
 internal data class JpegCompressionResult(
     val succeeded: Boolean,
@@ -26,246 +25,138 @@ internal data class JpegCompressionResult(
     val dimensions: JpegDimensions? = null
 )
 
+internal class JpegStatePersistenceException(message: String, cause: Throwable? = null) :
+    Exception(message, cause)
+
+internal class JpegSourceSafetyException : Exception(
+    "Source and output refer to the same file; the original was left unchanged."
+)
+
 internal suspend fun Context.compressJpegImage(
     inputUri: Uri,
     outputFile: File,
     quality: Int,
+    knownDimensions: JpegDimensions? = null,
+    onDimensionsRead: suspend (JpegDimensions) -> Unit = {},
     metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
 ): JpegCompressionResult = withContext(Dispatchers.IO) {
-    runCatching {
-        val coroutineContext = currentCoroutineContext()
-        var headerBytesRead = 0L
-        val headerInspection = try {
-            metrics.measure(ProcessingStage.HeaderRead) {
-                contentResolver.openInputStream(inputUri)?.use { input ->
-                    val measured = MeasuredInputStream(input)
-                    try {
-                        inspectJpegHeader(measured, checkpoint = coroutineContext::ensureActive)
-                    } finally {
-                        headerBytesRead = measured.bytesRead
+    encodingMutex.withLock {
+        runCatching {
+            val coroutineContext = currentCoroutineContext()
+            var headerBytesRead = 0L
+            val headerInspection = try {
+                metrics.measure(ProcessingStage.HeaderRead) {
+                    contentResolver.openInputStream(inputUri)?.use { input ->
+                        val measured = MeasuredInputStream(input)
+                        try {
+                            inspectJpegHeader(measured, checkpoint = coroutineContext::ensureActive)
+                        } finally {
+                            headerBytesRead = measured.bytesRead
+                        }
                     }
                 }
+            } finally {
+                metrics.recordIo(ProcessingStage.HeaderRead, bytesRead = headerBytesRead)
             }
-        } finally {
-            metrics.recordIo(ProcessingStage.HeaderRead, bytesRead = headerBytesRead)
-        }
-        headerInspection
-            ?: return@runCatching JpegCompressionResult(
-                succeeded = false,
-                message = "Could not read JPEG dimensions; original file was preserved."
-            )
-        val dimensions = when (headerInspection) {
-            is JpegInspectionResult.Valid -> headerInspection.structure.dimensions
-            is JpegInspectionResult.Invalid -> {
-                return@runCatching JpegCompressionResult(
+            headerInspection
+                ?: return@runCatching JpegCompressionResult(
                     succeeded = false,
-                    message = "JPEG structure was invalid; original file was preserved."
+                    message = "Could not read JPEG dimensions; original file was preserved."
                 )
-            }
-        }
-
-        val memoryDecision = metrics.measure(ProcessingStage.MemoryAdmission) {
-            evaluateEncodingMemory(dimensions.width, dimensions.height)
-        }
-        metrics.recordMemoryDecision(
-            estimatedPeakBytes = memoryDecision.estimatedPeakBytes,
-            estimatedAppHeapBytes = memoryDecision.estimatedAppHeapBytes,
-            rejection = memoryDecision.rejection?.name
-        )
-        if (!memoryDecision.canEncode) {
-            val message = when (memoryDecision.rejection) {
-                EncodingMemoryRejection.ImageTooLarge ->
-                    "Image is too large to compress safely (${dimensions.width} x ${dimensions.height}); original file was preserved."
-
-                else ->
-                    "Not enough memory is available to compress this image safely (${dimensions.width} x ${dimensions.height}); original file was preserved."
-            }
-            return@runCatching JpegCompressionResult(
-                succeeded = false,
-                message = message,
-                dimensions = dimensions
-            )
-        }
-
-        var decodedBytesRead = 0L
-        val bitmap = metrics.measure(ProcessingStage.BitmapDecode) {
-            loadBitmapForCompression(inputUri) { bytesRead -> decodedBytesRead = bytesRead }
-        }
-        metrics.recordIo(ProcessingStage.BitmapDecode, bytesRead = decodedBytesRead)
-        bitmap
-            ?: return@runCatching JpegCompressionResult(
-                succeeded = false,
-                message = "Unable to decode JPEG data; original file was preserved.",
-                dimensions = dimensions
-            )
-        try {
-            if (bitmap.width != dimensions.width || bitmap.height != dimensions.height) {
-                return@runCatching JpegCompressionResult(
-                    succeeded = false,
-                    message = "JPEG dimensions changed while it was being read; original file was preserved.",
-                    dimensions = dimensions
-                )
-            }
-
-            val encoded = bitmap.encodeJpegViaMozJpeg(outputFile, quality, metrics)
-            if (!encoded) {
-                return@runCatching JpegCompressionResult(
-                    succeeded = false,
-                    message = "MozJPEG compression failed; original file was preserved.",
-                    dimensions = dimensions
-                )
-            }
-
-            currentCoroutineContext().ensureActive()
-            JpegCompressionResult(succeeded = true, dimensions = dimensions)
-        } finally {
-            bitmap.recycle()
-        }
-    }.getOrElse { error ->
-        if (error is CancellationException) throw error
-        JpegCompressionResult(
-            succeeded = false,
-            message = if (error is OutOfMemoryError) {
-                "The image exceeded the available memory while compressing; original file was preserved."
-            } else {
-                error.message ?: "MozJPEG compression failed; original file was preserved."
-            }
-        )
-    }
-}
-
-private data class MozJpegAttempt(
-    val subsampling: Int,
-    val progressive: Boolean,
-    val accurateDct: Boolean
-) {
-    val describe: String
-        get() = buildString {
-            append("subsampling=")
-            append(subsampling)
-            append(", progressive=")
-            append(progressive)
-            append(", accurateDct=")
-            append(accurateDct)
-        }
-}
-
-private suspend fun Bitmap.encodeJpegViaMozJpeg(
-    outputFile: File,
-    quality: Int,
-    metrics: ProcessingMetricsRecorder
-): Boolean {
-    if (!MozJpegNative.isAvailable) {
-        logMozJpegEventTelemetry("MozJPEG native module unavailable; ${MozJpegNative.runtimeStatusMessage()}.")
-        return false
-    }
-
-    val attempts = listOf(
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_420, progressive = true, accurateDct = true),
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_420, progressive = true, accurateDct = false),
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_422, progressive = true, accurateDct = true),
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_420, progressive = false, accurateDct = true),
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_444, progressive = true, accurateDct = true),
-        MozJpegAttempt(subsampling = MOZJPEG_SUBSAMPLING_444, progressive = false, accurateDct = true)
-    )
-
-    val coroutineContext = currentCoroutineContext()
-    var failureReason: String? = null
-    for ((attemptIndex, attempt) in attempts.withIndex()) {
-        currentCoroutineContext().ensureActive()
-        val encoded = metrics.measure(ProcessingStage.NativeEncode) {
-            runCatching {
-                ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { descriptor ->
-                    MozJpegNative.compressBitmapToJpeg(
-                        bitmap = this,
-                        outputFileDescriptor = descriptor.fd,
-                        quality = quality,
-                        progressive = attempt.progressive,
-                        subsampling = attempt.subsampling,
-                        accurateDct = attempt.accurateDct
+            val dimensions = when (headerInspection) {
+                is JpegInspectionResult.Valid -> headerInspection.structure.dimensions
+                is JpegInspectionResult.Invalid -> {
+                    return@runCatching JpegCompressionResult(
+                        succeeded = false,
+                        message = "JPEG structure was invalid; original file was preserved."
                     )
                 }
-            }.getOrDefault(false)
-        }
-        metrics.recordIo(ProcessingStage.NativeEncode, bytesWritten = outputFile.length())
-        currentCoroutineContext().ensureActive()
+            }
+            if (knownDimensions != null && dimensions != knownDimensions) {
+                return@runCatching JpegCompressionResult(
+                    succeeded = false,
+                    message = "JPEG dimensions changed since this batch was prepared; original file was not reused.",
+                    dimensions = knownDimensions
+                )
+            }
+            if (knownDimensions == null) onDimensionsRead(dimensions)
 
-        if (!encoded) {
-            failureReason = "${attempt.describe} returned no output"
-            continue
-        }
-
-        var validationBytesRead = 0L
-        val inspection = try {
-            metrics.measure(ProcessingStage.EncoderValidation) {
-                outputFile.inputStream().use { input ->
-                    val measured = MeasuredInputStream(input)
-                    try {
-                        inspectCompleteJpeg(
-                            input = measured,
-                            expectedDimensions = JpegDimensions(width = width, height = height),
-                            checkpoint = coroutineContext::ensureActive
+            val budget = metrics.measure(ProcessingStage.MemoryAdmission) {
+                nativeEncodingBudget()
+            }
+            if (budget.rejection != null) {
+                metrics.recordMemoryDecision(0L, 0L, budget.rejection.name)
+                return@runCatching JpegCompressionResult(
+                    false, "Not enough memory is available for optimized JPEG compression; original file was preserved.",
+                    dimensions
+                )
+            }
+            val result = metrics.measure(ProcessingStage.NativeEncode) {
+                contentResolver.openAssetFileDescriptor(inputUri, "r")?.use { input ->
+                    ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { output ->
+                        MozJpegNative.transcodeJpeg(
+                            inputFileDescriptor = input.parcelFileDescriptor.fd,
+                            outputFileDescriptor = output.fd,
+                            dimensions = dimensions,
+                            quality = quality,
+                            memoryBudgetBytes = budget.bytes,
+                            cancelled = BooleanSupplier { !coroutineContext.isActive },
+                            inputOffset = input.startOffset,
+                            inputLength = input.declaredLength
                         )
-                    } finally {
-                        validationBytesRead = measured.bytesRead
                     }
+                } ?: NativeCompressionResult(NativeCompressionStatus.IoFailure)
+            }
+            metrics.recordIo(ProcessingStage.NativeEncode,
+                bytesRead = result.bytesRead, bytesWritten = outputFile.length())
+            metrics.recordMemoryDecision(
+                result.estimatedPeakBytes, 0L,
+                if (result.status == NativeCompressionStatus.ResourceLimit) "NativeResourceLimit" else null
+            )
+            coroutineContext.ensureActive()
+            if (result.status == NativeCompressionStatus.Cancelled) throw CancellationException()
+            // An original-copy fallback would write into the source too. Fail the
+            // operation instead of treating this as an ordinary compression failure.
+            if (result.status == NativeCompressionStatus.SourceOutputCollision) throw JpegSourceSafetyException()
+            if (result.status != NativeCompressionStatus.Success) {
+                logMozJpegEventTelemetry("MozJPEG transcode failed: ${result.status}")
+                return@runCatching JpegCompressionResult(false, result.status.failureMessage(), dimensions)
+            }
+            // Metadata rewriting and final structural validation happen after both native
+            // codecs have been destroyed; no bitmap or codec buffers remain resident.
+            JpegCompressionResult(succeeded = true, dimensions = dimensions)
+        }.getOrElse { error ->
+            if (error is CancellationException || error is JpegStatePersistenceException ||
+                error is JpegSourceSafetyException
+            ) throw error
+            JpegCompressionResult(
+                succeeded = false,
+                message = if (error is OutOfMemoryError) {
+                    "The image exceeded the available memory while compressing; original file was preserved."
+                } else {
+                    error.message ?: "MozJPEG compression failed; original file was preserved."
                 }
-            }
-        } catch (error: Exception) {
-            failureReason = "${attempt.describe} could not be inspected: ${error.message}"
-            continue
-        } finally {
-            metrics.recordIo(ProcessingStage.EncoderValidation, bytesRead = validationBytesRead)
+            )
         }
-        if (inspection is JpegInspectionResult.Invalid) {
-            failureReason = "${attempt.describe} failed structural validation: ${inspection.reason}"
-            continue
-        }
-        inspection as JpegInspectionResult.Valid
-
-        val requiresVisualValidation = requiresVisualJpegValidation(
-            isPrimaryAttempt = attemptIndex == 0,
-            progressive = attempt.progressive,
-            structure = inspection.structure
-        )
-        if (requiresVisualValidation) {
-            val visuallyConsistent = metrics.measure(ProcessingStage.VisualValidation) {
-                outputFile.isVisuallyConsistentJpeg(width, height, this)
-            }
-            metrics.recordIo(ProcessingStage.VisualValidation, bytesRead = outputFile.length())
-            if (!visuallyConsistent) {
-                failureReason = "${attempt.describe} failed exceptional visual validation"
-                continue
-            }
-        }
-
-        if (attemptIndex != 0) {
-            logMozJpegEventTelemetry("MozJPEG native output succeeded using alternate attempt: ${attempt.describe}")
-        }
-
-        return true
     }
-
-    logMozJpegEventTelemetry("MozJPEG encoding failed; $failureReason.")
-
-    return false
 }
 
-internal fun requiresVisualJpegValidation(
-    isPrimaryAttempt: Boolean,
-    progressive: Boolean,
-    structure: JpegStructure
-): Boolean {
-    val expectedFrameMarker = if (progressive) {
-        JPEG_PROGRESSIVE_FRAME_MARKER
-    } else {
-        JPEG_BASELINE_FRAME_MARKER
-    }
-    return !isPrimaryAttempt ||
-        structure.frameMarker != expectedFrameMarker ||
-        structure.precision != 8 ||
-        structure.componentCount != 3
+private val encodingMutex = Mutex()
+
+private fun NativeCompressionStatus.failureMessage(): String = when (this) {
+    NativeCompressionStatus.ResourceLimit ->
+        "Not enough memory is available for optimized JPEG compression; original file was preserved."
+    NativeCompressionStatus.InvalidData ->
+        "JPEG data was invalid or changed while being read; original file was preserved."
+    NativeCompressionStatus.IoFailure ->
+        "JPEG input or output could not be read or written; original file was preserved."
+    NativeCompressionStatus.Unsupported ->
+        "This JPEG color space, precision, or dimensions are not supported; original file was preserved."
+    NativeCompressionStatus.Unavailable ->
+        "MozJPEG is unavailable; original file was preserved."
+    else -> "MozJPEG compression did not complete; original file was preserved."
 }
 
+// Native code verifies that the descriptors refer to different files before truncating.
 private const val OUTPUT_FILE_MODE = ParcelFileDescriptor.MODE_WRITE_ONLY or
-    ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
+    ParcelFileDescriptor.MODE_CREATE

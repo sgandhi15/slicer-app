@@ -92,6 +92,10 @@ class SlicerMacrobenchmark {
             "Results screen did not become visible.",
             device.wait(Until.hasObject(By.text("Last run files")), UI_TIMEOUT_MILLIS)
         )
+        assertTrue(
+            "The first persisted result page did not load.",
+            device.wait(Until.hasObject(By.text("Image 0.jpg")), UI_TIMEOUT_MILLIS)
+        )
     }
 
     private companion object {

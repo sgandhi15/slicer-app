@@ -1,6 +1,6 @@
 package com.example.slicer.batch
 
-import java.io.IOException
+import com.example.slicer.core.RetryableFailure
 
 internal const val MAX_CONCURRENT_IMAGE_PROCESSORS = 1
 internal const val MAX_WORKER_RETRIES = 2
@@ -24,5 +24,7 @@ internal fun Throwable.isRetryableItemFailure(): Boolean {
         .take(MAX_ERROR_CAUSE_DEPTH)
         .any { error -> error is SecurityException }
     if (hasSecurityCause) return false
-    return this is IOException
+    return generateSequence(this) { error -> error.cause }
+        .take(MAX_ERROR_CAUSE_DEPTH)
+        .any { error -> error is RetryableFailure }
 }

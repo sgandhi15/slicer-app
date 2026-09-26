@@ -15,7 +15,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.slicer.core.LOG_TAG
-import com.example.slicer.core.MOZJPEG_SUBSAMPLING_420
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
 import com.example.slicer.telemetry.ProcessingStage
@@ -113,13 +112,9 @@ class ProcessingPerformanceTest {
 
     private suspend fun runRepresentativePipeline(width: Int, height: Int, label: String) {
         requirePerformanceRun()
-        val memoryDecision = context.evaluateEncodingMemory(width, height)
-        Log.i(
-            LOG_TAG,
-            "Memory policy metrics label=$label canEncode=${memoryDecision.canEncode} " +
-                "estimatedPeakBytes=${memoryDecision.estimatedPeakBytes} rejection=${memoryDecision.rejection}"
-        )
-        assumeTrue("Device memory policy rejected $label: ${memoryDecision.rejection}", memoryDecision.canEncode)
+        val budget = context.nativeEncodingBudget()
+        Log.i(LOG_TAG, "Native memory budget label=$label bytes=${budget.bytes} rejection=${budget.rejection}")
+        assumeTrue("Device memory policy rejected $label: ${budget.rejection}", budget.rejection == null)
         val sourceFile = createSourceJpeg(width, height, label)
         val outputFile = File(context.cacheDir, "benchmark-$label-output.jpg")
         val metrics = ProcessingMetricsRecorder.create(
@@ -158,55 +153,35 @@ class ProcessingPerformanceTest {
     private suspend fun runRepresentativeNativeEncode(width: Int, height: Int, label: String) {
         requirePerformanceRun()
         assumeTrue("MozJPEG native module is unavailable.", MozJpegNative.isAvailable)
-        val memoryDecision = context.evaluateEncodingMemory(width, height)
-        assumeTrue(
-            "Production memory policy rejected $label: ${memoryDecision.rejection}",
-            memoryDecision.canEncode
-        )
-        val bitmapBytes = width.toLong() * height.toLong() * 4L
-        val availableJavaHeap = Runtime.getRuntime().let { runtime ->
-            runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
-        }
-        assumeTrue(
-            "Not enough Java heap to allocate the benchmark bitmap.",
-            availableJavaHeap > bitmapBytes + NATIVE_BENCHMARK_HEAP_RESERVE_BYTES
-        )
+        val budget = context.nativeEncodingBudget()
+        assumeTrue("Production memory policy rejected $label: ${budget.rejection}", budget.rejection == null)
+        val sourceFile = createSourceJpeg(width, height, label)
         val outputFile = File(context.cacheDir, "benchmark-$label-output.jpg")
         val metrics = ProcessingMetricsRecorder.create(
-            batchId = "benchmark-$label",
-            itemId = "item",
-            attemptCount = 1,
+            batchId = "benchmark-$label", itemId = "item", attemptCount = 1,
             sampleMemoryFrequently = true
         )
-        var bitmap: Bitmap? = null
-
         try {
-            val benchmarkBitmap = metrics.measure(ProcessingStage.BitmapDecode) {
-                createPatternBitmap(width, height)
-            }
-            bitmap = benchmarkBitmap
-            val encoded = metrics.measure(ProcessingStage.NativeEncode) {
-                ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { descriptor ->
-                    MozJpegNative.compressBitmapToJpeg(
-                        bitmap = benchmarkBitmap,
-                        outputFileDescriptor = descriptor.fd,
-                        quality = 80,
-                        progressive = true,
-                        subsampling = MOZJPEG_SUBSAMPLING_420,
-                        accurateDct = true
-                    )
+            val result = metrics.measure(ProcessingStage.NativeEncode) {
+                ParcelFileDescriptor.open(sourceFile, ParcelFileDescriptor.MODE_READ_ONLY).use { source ->
+                    ParcelFileDescriptor.open(outputFile, OUTPUT_FILE_MODE).use { target ->
+                        MozJpegNative.transcodeJpeg(
+                            source.fd, target.fd, JpegDimensions(width, height), 80, budget.bytes
+                        )
+                    }
                 }
             }
-            metrics.recordIo(ProcessingStage.NativeEncode, bytesWritten = outputFile.length())
-            assertTrue(encoded)
+            metrics.recordMemoryDecision(result.estimatedPeakBytes, 0L, null)
+            metrics.recordIo(ProcessingStage.NativeEncode, bytesRead = result.bytesRead, bytesWritten = outputFile.length())
+            assertEquals(NativeCompressionStatus.Success, result.status)
             val inspection = metrics.measure(ProcessingStage.EncoderValidation) {
                 outputFile.inspectCompleteJpeg(JpegDimensions(width, height))
             }
             metrics.recordIo(ProcessingStage.EncoderValidation, bytesRead = outputFile.length())
             assertTrue(inspection is JpegInspectionResult.Valid)
-            metrics.finish("DirectEncoded")
+            metrics.finish("DirectTranscoded")
         } finally {
-            bitmap?.recycle()
+            sourceFile.delete()
             outputFile.delete()
         }
     }
@@ -265,7 +240,6 @@ class ProcessingPerformanceTest {
     private companion object {
         const val PERFORMANCE_ARGUMENT = "slicer.performance"
         const val BATCH_SIZE_ARGUMENT = "slicer.batchSize"
-        const val NATIVE_BENCHMARK_HEAP_RESERVE_BYTES = 64L * 1024L * 1024L
         const val OUTPUT_FILE_MODE = ParcelFileDescriptor.MODE_WRITE_ONLY or
             ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
         val SUPPORTED_BATCH_SIZES = setOf(100, 500, 1_000)

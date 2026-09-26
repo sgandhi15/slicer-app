@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.paging.compose.collectAsLazyPagingItems
 import com.example.slicer.ui.theme.SlicerTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -115,7 +116,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
 
     val isProcessing = durableState.isProcessing || durableState.isStarting
     val currentProgress = durableState.progress
-    val batchResults = durableState.results
 
     LaunchedEffect(notificationMessage, isNotificationVisible) {
         if (isNotificationVisible) {
@@ -364,7 +364,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                     ) {
                         BatchSetupContent(
                             selectedImages = selectedImages,
-                            status = selectionState.notice ?: status,
                             isValidating = selectionState.isValidating,
                             validatedCount = selectionState.validatedCount,
                             validationTotal = selectionState.totalCount,
@@ -395,6 +394,8 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 Text(
                                     text = if (selectionState.isValidating) {
                                         "Validating ${selectionState.validatedCount} of ${selectionState.totalCount}"
+                                    } else if (selectedImages.isEmpty()) {
+                                        "Select up to $MAX_SELECTED_IMAGES images"
                                     } else if (selectedImages.size == 1) {
                                         "1 file selected"
                                     } else {
@@ -557,7 +558,6 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             ProcessingPanel(progress = currentProgress)
-                            durableState.status?.let { NoticeText(message = it) }
                         }
 
                         Surface(
@@ -568,6 +568,14 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                             color = MaterialTheme.colorScheme.background
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                durableState.status?.let { message ->
+                                    Text(
+                                        text = message,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                                    )
+                                }
                                 if (durableState.needsDestination) {
                                     Button(
                                         onClick = { folderPicker.launch(null) },
@@ -608,6 +616,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                 }
 
                 SlicerScreen.Results -> {
+                    val batchResults = homeViewModel.resultPages.collectAsLazyPagingItems()
                     Box(
                         modifier = Modifier
                             .testTag("slicer-results-screen")
@@ -621,7 +630,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 .padding(bottom = 72.dp)
                         ) {
                             durableState.status?.let { NoticeText(message = it) }
-                            if (batchResults.isNotEmpty()) {
+                            if (currentProgress.completed > 0) {
                                 BatchResultsPanel(
                                     results = batchResults,
                                     summary = currentProgress,

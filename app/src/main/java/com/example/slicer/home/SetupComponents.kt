@@ -64,7 +64,6 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun BatchSetupContent(
     selectedImages: List<Uri>,
-    status: String?,
     isValidating: Boolean,
     validatedCount: Int,
     validationTotal: Int,
@@ -89,9 +88,6 @@ internal fun BatchSetupContent(
                 SelectionValidationPanel(validatedCount, validationTotal)
             }
 
-            status?.let { message ->
-                NoticeText(message = message)
-            }
         }
         return
     }
@@ -113,12 +109,6 @@ internal fun BatchSetupContent(
         if (isValidating) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 SelectionValidationPanel(validatedCount, validationTotal)
-            }
-        }
-
-        status?.let { message ->
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                NoticeText(message = message)
             }
         }
 

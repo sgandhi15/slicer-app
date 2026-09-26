@@ -233,6 +233,29 @@ class HomeViewModelTest {
         assertTrue(maximumActiveCalls.get() in 1..4)
     }
 
+    @Test
+    fun selectionValidationCapsWorkAtThePersistedGrantPolicy() = runBlocking {
+        val uris = List(401) { index -> Uri.parse("content://selection/capped-$index.jpg") }
+        val callCount = AtomicInteger(0)
+        val viewModel = HomeViewModel(
+            application,
+            SavedStateHandle(),
+            ImageSelectionValidator {
+                callCount.incrementAndGet()
+                ImageSelectionOutcome.Supported
+            }
+        )
+
+        viewModel.validateImageSelection(uris)
+        val selection = withTimeout(15_000) {
+            viewModel.selectionState.first { state -> !state.isValidating && state.totalCount == 400 }
+        }
+
+        assertEquals(400, selection.selectedImages.size)
+        assertEquals(1, selection.ignoredCount)
+        assertEquals(400, callCount.get())
+    }
+
     private companion object {
         const val BATCH_ID = "active-restored-batch"
     }

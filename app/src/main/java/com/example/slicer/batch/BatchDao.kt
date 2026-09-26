@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.paging.PagingSource
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -26,8 +27,24 @@ internal abstract class BatchDao {
     )
     abstract fun observeLatestBatch(): Flow<BatchEntity?>
 
-    @Query("SELECT * FROM batch_items WHERE batchId = :batchId ORDER BY position")
-    abstract fun observeItems(batchId: String): Flow<List<BatchItemEntity>>
+    @Query(
+        """
+        SELECT * FROM batch_items
+        WHERE batchId = :batchId
+            AND state IN ('Compressed', 'CopiedOriginal', 'Failed', 'Cancelled')
+        ORDER BY position
+        """
+    )
+    abstract fun pagingResults(batchId: String): PagingSource<Int, BatchItemEntity>
+
+    @Query(
+        """
+        SELECT * FROM batch_items
+        WHERE batchId = :batchId AND state = 'Processing'
+        ORDER BY position LIMIT 1
+        """
+    )
+    abstract fun observeCurrentItem(batchId: String): Flow<BatchItemEntity?>
 
     @Query("SELECT * FROM batches WHERE id = :batchId")
     abstract suspend fun getBatch(batchId: String): BatchEntity?
@@ -97,9 +114,21 @@ internal abstract class BatchDao {
 
     @Query(
         """
+        SELECT * FROM batch_items
+        WHERE batchId = :batchId AND state = :state
+        ORDER BY position LIMIT 1
+        """
+    )
+    abstract suspend fun getNextQueuedItemForPreparation(
+        batchId: String,
+        state: BatchItemState = BatchItemState.Queued
+    ): BatchItemEntity?
+
+    @Query(
+        """
         UPDATE batch_items
         SET inputName = :inputName, outputName = :outputName, inputBytes = :inputBytes
-        WHERE id = :itemId AND state = :queuedState
+        WHERE id = :itemId AND state IN (:queuedState, :processingState)
             AND (inputName IS NULL OR outputName IS NULL)
         """
     )
@@ -108,7 +137,8 @@ internal abstract class BatchDao {
         inputName: String,
         outputName: String,
         inputBytes: Long,
-        queuedState: BatchItemState = BatchItemState.Queued
+        queuedState: BatchItemState = BatchItemState.Queued,
+        processingState: BatchItemState = BatchItemState.Processing
     ): Int
 
     @Query("UPDATE batches SET totalInputBytes = totalInputBytes + :inputBytes WHERE id = :batchId")
@@ -128,10 +158,36 @@ internal abstract class BatchDao {
     @Query(
         """
         SELECT * FROM batch_items
-        WHERE outputUri IS NOT NULL AND state IN ('Processing', 'Failed', 'Cancelled')
+        WHERE (outputUri IS NOT NULL OR outputCleanupPending = 1)
+            AND state IN ('Processing', 'Failed', 'Cancelled')
         """
     )
     abstract suspend fun getIncompleteOutputItems(): List<BatchItemEntity>
+
+    @Query(
+        """
+        UPDATE batch_items SET outputCleanupPending = 1
+        WHERE id = :itemId AND state = :state AND outputUri IS NULL
+        """
+    )
+    abstract suspend fun markOutputCreationStarted(
+        itemId: String,
+        state: BatchItemState = BatchItemState.Processing
+    ): Int
+
+    @Query(
+        """
+        UPDATE batch_items SET width = :width, height = :height
+        WHERE id = :itemId AND state = :state
+            AND (width <= 0 OR height <= 0)
+        """
+    )
+    abstract suspend fun recordDimensions(
+        itemId: String,
+        width: Int,
+        height: Int,
+        state: BatchItemState = BatchItemState.Processing
+    ): Int
 
     @Query("UPDATE batch_items SET state = :processingState, attemptCount = attemptCount + 1 WHERE id = :itemId AND state = :queuedState")
     protected abstract suspend fun markProcessing(
@@ -144,8 +200,9 @@ internal abstract class BatchDao {
         """
         UPDATE batch_items
         SET state = :queuedState, outputUri = NULL, actualOutputName = NULL,
-            outputBytes = -1, message = NULL
+            outputBytes = -1, savedBytes = 0, message = NULL, outputCleanupPending = 0
         WHERE id = :itemId AND state = :processingState
+            AND outputUri IS NULL AND outputCleanupPending = 0
         """
     )
     protected abstract suspend fun requeueInterruptedItem(
@@ -170,7 +227,8 @@ internal abstract class BatchDao {
     @Query(
         """
         UPDATE batch_items
-        SET outputUri = NULL, actualOutputName = NULL, outputBytes = -1
+        SET outputUri = NULL, actualOutputName = NULL, outputBytes = -1,
+            savedBytes = 0, outputCleanupPending = 0
         WHERE id = :itemId AND state IN ('Processing', 'Failed', 'Cancelled')
         """
     )
@@ -180,7 +238,8 @@ internal abstract class BatchDao {
         """
         UPDATE batch_items
         SET state = :state, outputUri = :outputUri, actualOutputName = :actualOutputName,
-            outputBytes = :outputBytes, message = :message
+            outputBytes = :outputBytes, savedBytes = :savedBytes, message = :message,
+            outputCleanupPending = 0
         WHERE id = :itemId AND state = :processingState
         """
     )
@@ -190,9 +249,38 @@ internal abstract class BatchDao {
         outputUri: String?,
         actualOutputName: String?,
         outputBytes: Long,
+        savedBytes: Long,
         message: String?,
         processingState: BatchItemState = BatchItemState.Processing
     ): Int
+
+    @Query(
+        """
+        UPDATE batch_items
+        SET state = :failedState, outputUri = NULL, actualOutputName = NULL,
+            outputBytes = -1, savedBytes = 0, message = :message,
+            outputCleanupPending = 0
+        WHERE id = :itemId AND batchId = :batchId
+            AND state IN (:queuedState, :processingState)
+            AND outputUri IS NULL AND outputCleanupPending = 0
+        """
+    )
+    protected abstract suspend fun markUnfinishedItemFailed(
+        itemId: String,
+        batchId: String,
+        message: String,
+        failedState: BatchItemState = BatchItemState.Failed,
+        queuedState: BatchItemState = BatchItemState.Queued,
+        processingState: BatchItemState = BatchItemState.Processing
+    ): Int
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM batch_items
+        WHERE batchId = :batchId AND state IN ('Queued', 'Processing')
+        """
+    )
+    protected abstract suspend fun getUnfinishedItemCount(batchId: String): Int
 
     @Query("UPDATE batch_items SET state = :cancelledState, message = :message WHERE batchId = :batchId AND state = :queuedState")
     protected abstract suspend fun cancelQueuedItems(
@@ -440,8 +528,31 @@ internal abstract class BatchDao {
         val item = getItem(itemId)
             ?.takeIf { item -> item.batchId == batchId && item.state == BatchItemState.Processing }
             ?: return false
-        val changed = markTerminal(itemId, state, outputUri, actualOutputName, outputBytes, message) == 1
+        val savedBytes = savedBytesFor(item, state, outputBytes)
+        val changed = markTerminal(
+            itemId = itemId,
+            state = state,
+            outputUri = outputUri,
+            actualOutputName = actualOutputName,
+            outputBytes = outputBytes,
+            savedBytes = savedBytes,
+            message = message
+        ) == 1
         if (changed) addTerminalSummary(batchId, item, state, outputBytes)
+        return changed
+    }
+
+    @Transaction
+    open suspend fun failUnfinishedItem(itemId: String, batchId: String, message: String): Boolean {
+        val item = getItem(itemId)
+            ?.takeIf { item ->
+                item.batchId == batchId &&
+                    (item.state == BatchItemState.Queued || item.state == BatchItemState.Processing) &&
+                    item.outputUri == null && !item.outputCleanupPending
+            }
+            ?: return false
+        val changed = markUnfinishedItemFailed(itemId, batchId, message) == 1
+        if (changed) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
         return changed
     }
 
@@ -468,6 +579,7 @@ internal abstract class BatchDao {
                 outputUri = null,
                 actualOutputName = null,
                 outputBytes = -1L,
+                savedBytes = 0L,
                 message = "Cancelled by user."
             ) == 1
             if (changed) {
@@ -487,6 +599,7 @@ internal abstract class BatchDao {
                 outputUri = null,
                 actualOutputName = null,
                 outputBytes = -1L,
+                savedBytes = 0L,
                 message = message
             ) == 1
             if (terminal) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
@@ -512,6 +625,7 @@ internal abstract class BatchDao {
                         outputUri = null,
                         actualOutputName = null,
                         outputBytes = -1L,
+                        savedBytes = 0L,
                         message = "Cancelled by user."
                     ) == 1
                     if (changed) addTerminalSummary(batchId, item, BatchItemState.Cancelled, -1L)
@@ -526,6 +640,7 @@ internal abstract class BatchDao {
                         outputUri = null,
                         actualOutputName = null,
                         outputBytes = -1L,
+                        savedBytes = 0L,
                         message = "Processing was interrupted repeatedly."
                     ) == 1
                     if (changed) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
@@ -560,7 +675,7 @@ internal abstract class BatchDao {
     open suspend fun finishBatch(batchId: String) {
         refreshSummary(batchId)
         val batch = getBatch(batchId) ?: return
-        if (!batch.state.isActive) return
+        if (batch.state.isTerminal || getUnfinishedItemCount(batchId) > 0) return
         val state = when {
             batch.cancellationRequested -> BatchState.Cancelled
             batch.failedCount > 0 -> BatchState.CompletedWithFailures
@@ -582,6 +697,7 @@ internal abstract class BatchDao {
                     outputUri = null,
                     actualOutputName = null,
                     outputBytes = -1L,
+                    savedBytes = 0L,
                     message = "Cancelled by user."
                 ) == 1
                 if (changed) addTerminalSummary(batchId, item, BatchItemState.Cancelled, -1L)
@@ -605,6 +721,7 @@ internal abstract class BatchDao {
                 outputUri = null,
                 actualOutputName = null,
                 outputBytes = -1L,
+                savedBytes = 0L,
                 message = error
             ) == 1
             if (changed) addTerminalSummary(batchId, item, BatchItemState.Failed, -1L)
@@ -627,13 +744,7 @@ internal abstract class BatchDao {
         outputBytes: Long
     ) {
         val persistedOutputBytes = outputBytes.takeIf { bytes -> bytes > 0L } ?: 0L
-        val savedBytes = if (
-            state == BatchItemState.Compressed || state == BatchItemState.CopiedOriginal
-        ) {
-            (item.inputBytes - outputBytes).takeIf { saved -> outputBytes >= 0L && saved > 0L } ?: 0L
-        } else {
-            0L
-        }
+        val savedBytes = savedBytesFor(item, state, outputBytes)
         addSummaryDelta(
             batchId = batchId,
             completedDelta = 1,
@@ -644,6 +755,14 @@ internal abstract class BatchDao {
             outputBytesDelta = persistedOutputBytes,
             savedBytesDelta = savedBytes
         )
+    }
+
+    private fun savedBytesFor(item: BatchItemEntity, state: BatchItemState, outputBytes: Long): Long {
+        return if (state == BatchItemState.Compressed || state == BatchItemState.CopiedOriginal) {
+            (item.inputBytes - outputBytes).takeIf { saved -> outputBytes >= 0L && saved > 0L } ?: 0L
+        } else {
+            0L
+        }
     }
 
     private suspend fun refreshSummary(batchId: String) {

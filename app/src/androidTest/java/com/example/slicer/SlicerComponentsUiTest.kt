@@ -2,6 +2,8 @@ package com.example.slicer
 
 import android.net.Uri
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -12,6 +14,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.paging.PagingData
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.collectAsLazyPagingItems
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
@@ -19,6 +24,7 @@ import com.example.slicer.home.BatchSetupContent
 import com.example.slicer.home.BatchResultsPanel
 import com.example.slicer.home.QualityStepContent
 import com.example.slicer.ui.theme.SlicerTheme
+import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -56,7 +62,6 @@ class SlicerComponentsUiTest {
             SlicerTheme {
                     BatchSetupContent(
                         selectedImages = emptyList(),
-                        status = null,
                         isValidating = false,
                         validatedCount = 0,
                         validationTotal = 0,
@@ -81,7 +86,6 @@ class SlicerComponentsUiTest {
             SlicerTheme {
                     BatchSetupContent(
                         selectedImages = listOf(firstUri, secondUri),
-                        status = null,
                         isValidating = false,
                         validatedCount = 0,
                         validationTotal = 0,
@@ -105,7 +109,6 @@ class SlicerComponentsUiTest {
             SlicerTheme {
                 BatchSetupContent(
                     selectedImages = emptyList(),
-                    status = null,
                     isValidating = true,
                     validatedCount = 2,
                     validationTotal = 5,
@@ -125,7 +128,8 @@ class SlicerComponentsUiTest {
         composeTestRule.setContent {
             SlicerTheme {
                 BatchResultsPanel(
-                    results = listOf(
+                    results = pagedResults(
+                        listOf(
                         BatchFileResult(
                             id = "failed",
                             inputUri = Uri.parse("content://com.example.slicer/failed.jpg"),
@@ -135,6 +139,7 @@ class SlicerComponentsUiTest {
                             inputBytes = 1200L,
                             outputBytes = 0L,
                             message = "Could not process"
+                        )
                         )
                     ),
                     summary = ProcessingProgress(total = 1, completed = 1, failedCount = 1),
@@ -157,7 +162,8 @@ class SlicerComponentsUiTest {
         composeTestRule.setContent {
             SlicerTheme {
                 BatchResultsPanel(
-                    results = listOf(
+                    results = pagedResults(
+                        listOf(
                         BatchFileResult(
                             id = "success",
                             inputUri = Uri.parse("content://com.example.slicer/success.jpg"),
@@ -167,6 +173,7 @@ class SlicerComponentsUiTest {
                             inputBytes = 1200L,
                             outputBytes = 600L,
                             message = null
+                        )
                         )
                     ),
                     summary = ProcessingProgress(total = 1, completed = 1, compressedCount = 1),
@@ -198,7 +205,7 @@ class SlicerComponentsUiTest {
         composeTestRule.setContent {
             SlicerTheme {
                 BatchResultsPanel(
-                    results = results,
+                    results = pagedResults(results),
                     summary = ProcessingProgress(total = 400, completed = 400, compressedCount = 400),
                     totalInputBytes = 480_000L,
                     totalOutputBytes = 240_000L,
@@ -227,7 +234,7 @@ class SlicerComponentsUiTest {
         composeTestRule.setContent {
             SlicerTheme {
                 BatchResultsPanel(
-                    results = listOf(result),
+                    results = pagedResults(listOf(result)),
                     summary = ProcessingProgress(
                         total = 12,
                         completed = 12,
@@ -247,4 +254,9 @@ class SlicerComponentsUiTest {
         composeTestRule.onNodeWithText("3").assertIsDisplayed()
         composeTestRule.onNodeWithText("2").assertIsDisplayed()
     }
+}
+
+@Composable
+private fun pagedResults(results: List<BatchFileResult>): LazyPagingItems<BatchFileResult> {
+    return remember(results) { flowOf(PagingData.from(results)) }.collectAsLazyPagingItems()
 }
