@@ -7,9 +7,6 @@ import com.example.slicer.shared.formatByteCount
 import com.example.slicer.shared.formatSavedPercentage
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
-import com.example.slicer.ui.theme.hardShadow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.clickable
@@ -19,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,17 +67,10 @@ internal fun ProcessingPanel(
             color = MaterialTheme.colorScheme.onSurface
         )
         LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth().height(16.dp)
-                .clip(MaterialTheme.shapes.small)
-                .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.small),
-            trackColor = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.fillMaxWidth().height(6.dp)
+                .clip(MaterialTheme.shapes.small),
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
             progress = { ratio }
-        )
-
-        Text(
-            text = "${(ratio * 100).toInt()}% complete",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         progress.currentFile?.let { currentFile ->
@@ -94,22 +83,11 @@ internal fun ProcessingPanel(
             )
         }
 
-        Row(modifier = Modifier.fillMaxWidth()) {
-            ProcessingStat(
-                value = progress.compressedCount,
-                label = "Compressed",
-                modifier = Modifier.weight(1f)
-            )
-            ProcessingStat(
-                value = progress.copiedCount,
-                label = "Copied",
-                modifier = Modifier.weight(1f)
-            )
-            ProcessingStat(
-                value = progress.failedCount,
-                label = "Failed",
-                modifier = Modifier.weight(1f),
-                isError = progress.failedCount > 0
+        if (progress.failedCount > 0) {
+            Text(
+                text = "${progress.failedCount} failed",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
             )
         }
     }
@@ -186,7 +164,7 @@ internal fun BatchResultsPanel(
         item(key = "run-summary") {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "THAT’S LIGHTER.",
+                    text = "Results",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -194,9 +172,8 @@ internal fun BatchResultsPanel(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Column(
-                    modifier = Modifier.fillMaxWidth().hardShadow(MaterialTheme.shapes.medium)
-                        .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.medium)
-                        .background(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.shapes.medium).padding(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), MaterialTheme.shapes.medium).padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
@@ -237,10 +214,10 @@ internal fun BatchResultsPanel(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
-                    text = "Last run files",
+                    text = "Images",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -343,7 +320,7 @@ private fun BatchResultRow(
 
     val decisionColor = when (result.decision) {
         ProcessingDecision.Compressed -> MaterialTheme.colorScheme.onSurface
-        ProcessingDecision.CopiedOriginal -> MaterialTheme.colorScheme.secondary
+        ProcessingDecision.CopiedOriginal -> MaterialTheme.colorScheme.onSurfaceVariant
         ProcessingDecision.Failed -> MaterialTheme.colorScheme.error
         ProcessingDecision.Cancelled -> MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -360,7 +337,7 @@ private fun BatchResultRow(
             )
             .padding(vertical = 12.dp)
             .testTag(testTag),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -401,9 +378,8 @@ private fun BatchResultRow(
         }
 
         Surface(
-            border = BorderStroke(1.dp, decisionColor),
             color = when (result.decision) {
-                ProcessingDecision.Compressed -> MaterialTheme.colorScheme.secondaryContainer
+                ProcessingDecision.Compressed -> MaterialTheme.colorScheme.surfaceVariant
                 ProcessingDecision.Failed -> MaterialTheme.colorScheme.errorContainer
                 else -> MaterialTheme.colorScheme.surfaceVariant
             },

@@ -4,11 +4,12 @@ import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.QUALITY_PRESETS
 
-import com.example.slicer.ui.theme.hardShadow
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,7 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import com.example.slicer.ui.theme.SlicerOutlinedButton as OutlinedButton
+import com.example.slicer.ui.theme.SlicerTextButton as TextButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -54,28 +55,27 @@ internal fun QualityStepContent(
             color = MaterialTheme.colorScheme.onSurface
         )
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             QUALITY_PRESETS.forEach { preset ->
                 val isSelected = quality == preset.quality
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 76.dp)
-                        .hardShadow()
+                        .heightIn(min = 64.dp)
                         .testTag("quality-preset-${preset.label.lowercase()}")
-                        .clickable(enabled = controlsEnabled) {
+                        .selectable(selected = isSelected, enabled = controlsEnabled, role = Role.RadioButton) {
                             showCustomQuality = false
                             onQualityChange(preset.quality)
                         },
                     shape = MaterialTheme.shapes.small,
                     color = if (isSelected) {
-                        MaterialTheme.colorScheme.secondaryContainer
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                     } else {
                         MaterialTheme.colorScheme.surface
                     },
                     border = BorderStroke(
-                        width = 2.dp,
-                        color = MaterialTheme.colorScheme.outline
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = if (isSelected) 0.5f else 0.10f)
                     )
                 ) {
                     Row(
@@ -91,7 +91,7 @@ internal fun QualityStepContent(
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                    MaterialTheme.colorScheme.onSurface
                                 } else {
                                     MaterialTheme.colorScheme.onSurface
                                 }
@@ -104,7 +104,7 @@ internal fun QualityStepContent(
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                    MaterialTheme.colorScheme.onSurface
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
                                 }
@@ -126,13 +126,12 @@ internal fun QualityStepContent(
                 }
             }
 
-            OutlinedButton(
+            TextButton(
                 onClick = { showCustomQuality = !showCustomQuality },
                 enabled = controlsEnabled,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp),
-                shape = MaterialTheme.shapes.small
+                    .heightIn(min = 48.dp)
             ) {
                 Text(if (showCustomQuality) "Hide custom quality" else "Custom quality")
             }

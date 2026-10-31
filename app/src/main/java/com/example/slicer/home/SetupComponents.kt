@@ -9,8 +9,6 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
-import com.example.slicer.ui.theme.hardShadow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,6 +28,8 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -58,6 +58,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.withContext
@@ -76,20 +77,39 @@ internal fun BatchSetupContent(
     if (selectedImages.isEmpty()) {
         Column(
             modifier = modifier
-                .fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            Text("SMALLER FILES.\nMORE ROOM.", style = MaterialTheme.typography.headlineLarge)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Choose images",
+                    style = MaterialTheme.typography.displayMedium.copy(
+                        fontSize = 32.sp,
+                        lineHeight = 40.sp,
+                        letterSpacing = (-1).sp
+                    )
+                )
+                Text(
+                    "Make your JPEGs smaller.",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
             EmptyImagePicker(
                 enabled = controlsEnabled,
                 onClick = onSelectImages,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.aspectRatio(1.4f)
             )
 
             if (isValidating) {
                 SelectionValidationPanel(validatedCount, validationTotal)
             }
 
+            Text(
+                "On-device compression. Originals stay untouched.",
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
         return
     }
@@ -165,35 +185,33 @@ private fun EmptyImagePicker(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .hardShadow(MaterialTheme.shapes.medium)
             .testTag("batch-image-picker"),
         enabled = enabled,
         onClick = onClick,
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.primary,
-        border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)
         ) {
             Text(
                 text = "＋",
-                style = MaterialTheme.typography.displayMedium,
+                style = MaterialTheme.typography.displaySmall,
                 fontWeight = FontWeight.Black,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = "Select images",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Choose one or more JPEG files",
+                text = "Up to $MAX_SELECTED_IMAGES images",
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -259,7 +277,6 @@ private fun SelectedImageTile(
             .padding(horizontal = 4.dp)
             .fillMaxWidth()
             .aspectRatio(1f)
-            .border(2.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.small)
             .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .testTag("selected-image-${uri}")
@@ -279,7 +296,7 @@ private fun SelectedImageTile(
                 .padding(8.dp)
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.error)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
                 .clickable(enabled = enabled, onClick = onRemove)
                 .semantics { contentDescription = "Remove selected image" }
                 .testTag("remove-image-${uri}"),
@@ -287,7 +304,7 @@ private fun SelectedImageTile(
         ) {
             TrashIcon(
                 modifier = Modifier.size(15.dp),
-                color = MaterialTheme.colorScheme.onError
+                color = MaterialTheme.colorScheme.onSurface
             )
         }
     }
@@ -342,18 +359,17 @@ internal fun DestinationSection(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
-            text = "Destination",
-            style = MaterialTheme.typography.titleLarge,
+            text = "Save to",
+            style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .hardShadow()
                 .clickable(enabled = controlsEnabled, onClick = onSelectOutput),
             shape = MaterialTheme.shapes.small,
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline)
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),

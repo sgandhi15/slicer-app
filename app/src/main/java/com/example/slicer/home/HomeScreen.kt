@@ -456,27 +456,11 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
 
                             status?.let { NoticeText(message = it) }
 
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = MaterialTheme.shapes.small
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text(
-                                        text = "No image left behind",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "If an image cannot be compressed safely or made smaller, Slicer copies the original to the destination.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "Images that cannot be made smaller are copied unchanged.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
 
                         Surface(
@@ -490,13 +474,12 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                OutlinedButton(
+                                com.example.slicer.ui.theme.SlicerTextButton(
                                     onClick = { currentScreen = SlicerScreen.Setup },
                                     enabled = !isProcessing,
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .height(52.dp),
-                                    shape = MaterialTheme.shapes.small
+                                        .weight(0.7f)
+                                        .height(52.dp)
                                 ) {
                                     Text("Back")
                                 }
@@ -505,7 +488,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                     onClick = { startProcessing() },
                                     enabled = canStart,
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .weight(1.3f)
                                         .height(52.dp),
                                     shape = MaterialTheme.shapes.small
                                 ) {
@@ -670,7 +653,7 @@ fun SlicerHomeScreen(modifier: Modifier = Modifier) {
                                 .height(52.dp),
                             shape = MaterialTheme.shapes.small
                         ) {
-                            Text("New Image Selection")
+                            Text("Choose more images")
                         }
                     }
                 }

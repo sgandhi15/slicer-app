@@ -1,8 +1,6 @@
 package com.example.slicer.ui.theme
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -11,8 +9,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawOutline
@@ -39,28 +35,13 @@ internal fun SlicerButton(
     colors: ButtonColors = ButtonDefaults.buttonColors(),
     content: @Composable RowScope.() -> Unit
 ) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val ink = MaterialTheme.colorScheme.outline
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.padding(end = 4.dp, bottom = 4.dp).drawBehind {
-            if (enabled) {
-                val offset = if (pressed) 1.dp.toPx() else 4.dp.toPx()
-                val outline = shape.createOutline(size, layoutDirection, this)
-                translate(offset, offset) { drawOutline(outline, ink) }
-            }
-        },
+        modifier = modifier,
         shape = shape,
-        colors = colors.copy(
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            disabledContentColor = MaterialTheme.colorScheme.onSurface,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
-        border = BorderStroke(2.dp, ink),
+        colors = colors,
         elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp, 0.dp, 0.dp, 0.dp),
-        interactionSource = interaction,
         content = content
     )
 }
@@ -72,17 +53,17 @@ internal fun SlicerOutlinedButton(
     enabled: Boolean = true,
     shape: Shape = MaterialTheme.shapes.small,
     content: @Composable RowScope.() -> Unit
-) = SlicerButton(
-    onClick = onClick,
-    modifier = modifier,
-    enabled = enabled,
-    shape = shape,
-    colors = ButtonDefaults.buttonColors(
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface
-    ),
-    content = content
-)
+) {
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = shape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+        content = content
+    )
+}
 
 /** Disabled actions keep readable ink; background and semantics convey availability. */
 @Composable
