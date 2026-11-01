@@ -36,7 +36,6 @@ internal object MozJpegNative {
     }
 
     val isAvailable: Boolean get() = isLibraryLoaded && isNativeEncoderEnabled
-    val isMozJpegFeatureEnabled: Boolean get() = isNativeEncoderEnabled
 
     fun runtimeStatusMessage(): String = buildString {
         append("MozJPEG runtime status: libraryLoaded=")

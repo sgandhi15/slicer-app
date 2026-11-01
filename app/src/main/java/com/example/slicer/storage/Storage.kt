@@ -6,8 +6,6 @@ import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
 import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
-import com.example.slicer.core.JPEG_EXTENSION_SET
-import com.example.slicer.core.JPEG_MIME_TYPE_SET
 import com.example.slicer.core.JPEG_MIME_TYPES
 import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
@@ -34,7 +32,6 @@ import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.io.IOException
 import kotlin.math.ceil
-import java.util.Locale
 
 internal fun Context.loadSavedQuality(): Int {
     val prefs = getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE)
@@ -97,10 +94,6 @@ internal enum class OutputFolderAccess {
     Writable,
     PermissionMissing,
     TemporarilyUnavailable
-}
-
-internal fun Context.canWriteToOutputFolder(uri: Uri): Boolean {
-    return outputFolderAccess(uri) == OutputFolderAccess.Writable
 }
 
 internal fun Context.outputFolderAccess(uri: Uri): OutputFolderAccess {
@@ -186,43 +179,8 @@ internal fun sanitizeOutputFileName(rawName: String): String {
     if (safeBase.isBlank()) return "image.jpg"
     val dot = safeBase.lastIndexOf('.')
 
-    return when {
-        dot <= 0 -> "$safeBase.jpg"
-        safeBase.substring(dot + 1).lowercase(Locale.ROOT) in listOf("jpg", "jpeg") -> safeBase
-        else -> "$safeBase.jpg"
-    }
-}
-
-internal fun Context.isSupportedJpegUri(uri: Uri): Boolean {
-    val mimeType = runCatching { contentResolver.getType(uri) }
-        .getOrNull()
-        ?.lowercase(Locale.ROOT)
-        ?.trim()
-
-    val extension = runCatching {
-        resolveDisplayName(uri)
-            .substringAfterLast('.', "")
-            .lowercase(Locale.ROOT)
-            .trim()
-    }.getOrNull() ?: ""
-
-    val hasSupportedMime = mimeType in JPEG_MIME_TYPE_SET
-    val hasSupportedExtension = extension in JPEG_EXTENSION_SET
-    if (!hasSupportedMime || !hasSupportedExtension) return false
-
-    return hasJpegMagicHeader(uri)
-}
-
-internal fun Context.hasJpegMagicHeader(uri: Uri): Boolean {
-    return runCatching {
-        contentResolver.openInputStream(uri)?.use { input ->
-            val header = ByteArray(2)
-            val readCount = input.read(header)
-            readCount == 2 &&
-                (header[0].toInt() and 0xFF) == 0xFF &&
-                (header[1].toInt() and 0xFF) == 0xD8
-        } ?: false
-    }.getOrDefault(false)
+    // Keep the real extension: images copied unchanged must stay their own type.
+    return if (dot <= 0) "$safeBase.jpg" else safeBase
 }
 
 internal fun Context.resolveContentSize(uri: Uri): Long {

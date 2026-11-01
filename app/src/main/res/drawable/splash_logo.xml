@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp"
+    android:viewportWidth="96" android:viewportHeight="96">
+    <!-- Keep both moving slices inside Android's circular splash-icon safe zone. -->
+    <group android:pivotX="48" android:pivotY="48" android:scaleX="0.65" android:scaleY="0.65">
+        <group android:name="upperSlice" android:translateX="-8" android:translateY="-4">
+            <path android:fillColor="#171717"
+                android:pathData="M29,16 H67 Q79,16 79,28 V30.5 H35 A4.5,4.5 0,0 0,30.5 35 V56.5 H17 V28 Q17,16 29,16 Z" />
+        </group>
+        <group android:name="lowerSlice" android:translateX="8" android:translateY="4">
+            <path android:fillColor="#171717"
+                android:pathData="M39.5,39.5 H79 V68 Q79,80 67,80 H29 Q17,80 17,68 V65.5 H35 A4.5,4.5 0,0 0,39.5 61 Z" />
+        </group>
+    </group>
+</vector>

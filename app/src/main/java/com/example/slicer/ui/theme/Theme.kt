@@ -3,16 +3,16 @@ package com.example.slicer.ui.theme
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 
-private val LightColorScheme = lightColorScheme(
+private val InkColorScheme = darkColorScheme(
     primary = SlicerPrimary,
     onPrimary = SlicerOnPrimary,
     secondary = SlicerSecondary,
-    onSecondary = SlicerSurface,
+    onSecondary = SlicerOnPrimary,
     tertiary = SlicerTertiary,
-    onTertiary = SlicerSurface,
+    onTertiary = SlicerOnPrimary,
     background = SlicerBackground,
     onBackground = SlicerOnSurface,
     surface = SlicerSurface,
@@ -20,8 +20,16 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = SlicerSurfaceVariant,
     onSurfaceVariant = SlicerOnSurfaceVariant,
     outline = SlicerOutline,
-    outlineVariant = SlicerOutline,
+    outlineVariant = SlicerSurfaceVariant,
     surfaceTint = SlicerSurface,
+    // Keep elevated surfaces neutral so lime and lilac remain deliberate accents.
+    surfaceDim = SlicerSurface,
+    surfaceBright = SlicerSurface,
+    surfaceContainerLowest = SlicerSurface,
+    surfaceContainerLow = SlicerSurface,
+    surfaceContainer = SlicerSurface,
+    surfaceContainerHigh = SlicerSurface,
+    surfaceContainerHighest = SlicerSurface,
     error = SlicerError,
     onError = SlicerOnError,
     primaryContainer = SlicerPrimaryContainer,
@@ -34,7 +42,7 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun SlicerTheme(content: @Composable () -> Unit) {
-    val colorScheme = LightColorScheme
+    val colorScheme = InkColorScheme
 
     MaterialTheme(
         colorScheme = colorScheme,

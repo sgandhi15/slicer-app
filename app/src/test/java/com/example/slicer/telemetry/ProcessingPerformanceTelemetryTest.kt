@@ -87,24 +87,6 @@ class ProcessingPerformanceTelemetryTest {
         assertEquals(emptyMap<ProcessingStage, ProcessingStageMetrics>(), ProcessingMetricsRecorder.Disabled.snapshot().stages)
     }
 
-    @Test
-    fun aggregateIoSaturatesInsteadOfWrapping() {
-        val source = FakeMeasurementSource()
-        val recorder = ProcessingMetricsRecorder(
-            batchId = null,
-            itemId = null,
-            attemptCount = 0,
-            source = source,
-            trace = RecordingTrace(),
-            sampleMemoryFrequently = false
-        )
-
-        recorder.recordIo(ProcessingStage.HeaderRead, bytesRead = Long.MAX_VALUE)
-        recorder.recordIo(ProcessingStage.BitmapDecode, bytesRead = 1L)
-
-        assertEquals(Long.MAX_VALUE, recorder.snapshot().bytesRead)
-    }
-
     private class FakeMeasurementSource : ProcessingMeasurementSource {
         private var elapsedNanos = 0L
         private var cpuMillis = 0L

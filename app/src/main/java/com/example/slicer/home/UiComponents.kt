@@ -3,11 +3,21 @@ package com.example.slicer.home
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
+import com.example.slicer.core.isJpegFileName
 import com.example.slicer.shared.formatByteCount
 import com.example.slicer.shared.formatSavedPercentage
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
@@ -16,18 +26,27 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.ui.draw.clip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
+import com.example.slicer.ui.theme.SliceBurst
+import com.example.slicer.ui.theme.SliceProgressIndicator
+import com.example.slicer.ui.theme.SlicerNumbers
+import com.example.slicer.ui.theme.savingsSlice
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import com.example.slicer.ui.theme.SlicerTextButton as TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,19 +77,32 @@ internal fun ProcessingPanel(
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurface
         )
-        Text(
-            text = "${progress.completed} / ${progress.total}",
-            style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = 36.sp,
-                lineHeight = 44.sp
-            ),
-            color = MaterialTheme.colorScheme.onSurface
+        val countStyle = MaterialTheme.typography.titleLarge.copy(
+            fontFamily = SlicerNumbers,
+            fontWeight = FontWeight.Black,
+            fontSize = 44.sp,
+            lineHeight = 52.sp
         )
-        LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth().height(6.dp)
-                .clip(MaterialTheme.shapes.small),
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            progress = { ratio }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Each finished image rolls the count up like an odometer.
+            AnimatedContent(
+                targetState = progress.completed,
+                transitionSpec = {
+                    (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut())
+                },
+                label = "completed-count"
+            ) { completed ->
+                Text(text = "$completed", style = countStyle, color = MaterialTheme.colorScheme.onSurface)
+            }
+            Text(
+                text = " / ${progress.total}",
+                style = countStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        SliceProgressIndicator(
+            progress = ratio,
+            modifier = Modifier.fillMaxWidth()
         )
 
         progress.currentFile?.let { currentFile ->
@@ -107,8 +139,9 @@ private fun ProcessingStat(
     ) {
         Text(
             text = value.toString(),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.headlineSmall,
+            fontFamily = SlicerNumbers,
+            fontWeight = FontWeight.Black,
             color = if (isError) {
                 MaterialTheme.colorScheme.error
             } else {
@@ -131,8 +164,23 @@ internal fun BatchResultsPanel(
     totalOutputBytes: Long,
     totalSavedBytes: Long,
     onResultClick: (BatchFileResult) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    celebrate: Boolean = false,
+    onCelebrated: () -> Unit = {}
 ) {
+    // Captured once, so the caller can mark the run as celebrated straight away without cutting
+    // the animation short. Owned outside the list, so scrolling the card away does not replay it.
+    val celebrateNow = remember { celebrate && summary.cancelledCount == 0 && totalSavedBytes > 0L }
+    val countUp = remember { Animatable(if (celebrateNow) 0f else 1f) }
+    val haptics = LocalHapticFeedback.current
+    LaunchedEffect(Unit) {
+        if (celebrate) onCelebrated()
+        if (celebrateNow) {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            countUp.animateTo(1f, tween(1200, easing = FastOutSlowInEasing))
+        }
+    }
+
     when (val refresh = results.loadState.refresh) {
         is LoadState.Loading -> if (results.itemCount == 0) {
             Column(
@@ -171,16 +219,17 @@ internal fun BatchResultsPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                Box(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), MaterialTheme.shapes.medium).padding(16.dp),
+                        .savingsSlice()
+                        .padding(start = 16.dp, end = 16.dp, top = 40.dp, bottom = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "${formatByteCount(totalSavedBytes)} saved",
+                        text = "${formatByteCount((totalSavedBytes * countUp.value).toLong())} saved",
                         style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
 
@@ -212,6 +261,8 @@ internal fun BatchResultsPanel(
                             isError = summary.failedCount > 0
                         )
                     }
+                }
+                    SliceBurst(play = celebrateNow, modifier = Modifier.matchParentSize())
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -308,15 +359,17 @@ private fun BatchResultRow(
     testTag: String,
     onResultClick: () -> Unit
 ) {
+    // Non-JPEG images were copied byte for byte, so there is nothing to compare.
+    val copiedAsIs = result.decision == ProcessingDecision.CopiedOriginal && !isJpegFileName(result.inputName)
     val decisionLabel = when (result.decision) {
         ProcessingDecision.Compressed -> "Compressed"
-        ProcessingDecision.CopiedOriginal -> "Kept original"
+        ProcessingDecision.CopiedOriginal -> if (copiedAsIs) "Copied as-is" else "Kept original"
         ProcessingDecision.Failed -> "Failed"
         ProcessingDecision.Cancelled -> "Cancelled"
     }
 
     val canOpenCompare = result.decision != ProcessingDecision.Failed &&
-        result.decision != ProcessingDecision.Cancelled && result.outputUri != null
+        result.decision != ProcessingDecision.Cancelled && result.outputUri != null && !copiedAsIs
 
     val decisionColor = when (result.decision) {
         ProcessingDecision.Compressed -> MaterialTheme.colorScheme.onSurface
@@ -349,15 +402,18 @@ private fun BatchResultRow(
                 overflow = TextOverflow.Ellipsis
             )
 
-            val sizes = if (result.inputBytes > 0L) {
-                val savedPercent = formatSavedPercentage(result.inputBytes, result.outputBytes)
-                if (savedPercent == null) {
-                    "${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}"
+            // Byte counts are emphasized; the trailing note stays regular weight.
+            val sizes = buildAnnotatedString {
+                val emphasis = SpanStyle(fontWeight = FontWeight.SemiBold)
+                if (result.inputBytes > 0L) {
+                    withStyle(emphasis) {
+                        append("${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}")
+                    }
+                    formatSavedPercentage(result.inputBytes, result.outputBytes)?.let { append(" · $it") }
                 } else {
-                    "${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}  ($savedPercent)"
+                    append("Output size: ")
+                    withStyle(emphasis) { append(formatByteCount(result.outputBytes)) }
                 }
-            } else {
-                "Output size: ${formatByteCount(result.outputBytes)}"
             }
 
             Text(

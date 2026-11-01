@@ -3,7 +3,7 @@ package com.example.slicer.storage
 import com.example.slicer.core.DEFAULT_COPY_BUFFER_BYTES
 import com.example.slicer.core.DEFAULT_OUTPUT_RELATIVE_PATH
 import com.example.slicer.core.LOG_TAG
-import com.example.slicer.core.OUTPUT_MIME_TYPE
+import com.example.slicer.core.imageMimeTypeForName
 import com.example.slicer.core.RetryableFailure
 
 import android.content.ContentUris
@@ -279,7 +279,7 @@ internal fun Context.cleanupOrphanedPendingMediaStoreOutputs(): Boolean {
 private fun Context.createPendingMediaStoreOutput(fileName: String): Uri {
     val values = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, fileName.ifBlank { "image.jpg" })
-        put(MediaStore.MediaColumns.MIME_TYPE, OUTPUT_MIME_TYPE)
+        put(MediaStore.MediaColumns.MIME_TYPE, outputMimeType(fileName))
         put(MediaStore.MediaColumns.RELATIVE_PATH, DEFAULT_OUTPUT_RELATIVE_PATH)
         put(MediaStore.MediaColumns.IS_PENDING, 1)
     }
@@ -296,10 +296,12 @@ private fun Context.createSafOutput(outputFolderUri: Uri, fileName: String): Uri
     return DocumentsContract.createDocument(
         contentResolver,
         folderDocumentUri,
-        OUTPUT_MIME_TYPE,
+        outputMimeType(fileName),
         fileName.ifBlank { "image.jpg" }
     ) ?: throw OutputCreationNotPerformedException("Could not create output in the selected folder.")
 }
+
+private fun outputMimeType(fileName: String) = imageMimeTypeForName(fileName) ?: "image/jpeg"
 
 private class OutputCreationNotPerformedException(message: String) : IOException(message)
 

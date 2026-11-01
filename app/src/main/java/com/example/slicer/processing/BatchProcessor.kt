@@ -39,8 +39,12 @@ internal suspend fun processBatchItem(
     inputBytes: Long,
     knownDimensions: JpegDimensions? = null,
     onDimensionsRead: suspend (JpegDimensions) -> Unit = {},
-    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled,
+    passThrough: Boolean = false
 ): PreparedBatchOutput = withContext(Dispatchers.IO) {
+    if (passThrough) {
+        return@withContext copyUnchanged(context, inputUri, tempFile, inputBytes, metrics)
+    }
     val result = processSingleImage(
         context = context,
         inputUri = inputUri,
@@ -140,7 +144,6 @@ private suspend fun processSingleImage(
     onDimensionsRead: suspend (JpegDimensions) -> Unit,
     metrics: ProcessingMetricsRecorder
 ): PreparedBatchOutput {
-    val outputUri = outputFile.toUri()
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
     val compressionResult = try {
@@ -170,7 +173,7 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = compressionResult.message ?: "MozJPEG compression failed; original file was preserved.",
             expectedDimensions = compressionResult.dimensions,
             metrics = metrics
@@ -186,7 +189,7 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = "Compressed output was invalid.",
             expectedDimensions = dimensions,
             metrics = metrics
@@ -198,7 +201,7 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = "Compressed output was larger than source.",
             expectedDimensions = dimensions,
             metrics = metrics
@@ -217,12 +220,14 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = "Metadata could not be copied safely; original file was preserved.",
             expectedDimensions = dimensions,
             metrics = metrics
         )
     }
+
+    context.addMissingDateTaken(inputUri, outputFile, dimensions)
 
     val finalBytes = outputFile.length()
     if (inputBytes > 0L && finalBytes >= inputBytes) {
@@ -230,7 +235,7 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = "Compressed output with metadata was larger than source.",
             expectedDimensions = dimensions,
             metrics = metrics
@@ -242,7 +247,7 @@ private suspend fun processSingleImage(
             context = context,
             inputUri = inputUri,
             inputBytes = inputBytes,
-            outputUri = outputUri,
+            outputFile = outputFile,
             outputLabel = "Compressed output with metadata was invalid.",
             expectedDimensions = dimensions,
             metrics = metrics
@@ -257,17 +262,42 @@ private suspend fun processSingleImage(
     )
 }
 
+/** Non-JPEG images are copied byte for byte; the copy must match the source size exactly. */
+private suspend fun copyUnchanged(
+    context: Context,
+    inputUri: Uri,
+    tempFile: File,
+    inputBytes: Long,
+    metrics: ProcessingMetricsRecorder
+): PreparedBatchOutput {
+    val copiedBytes = metrics.measure(ProcessingStage.OriginalCopy) {
+        context.copyUriContent(inputUri, tempFile.toUri())
+    }
+    metrics.recordIo(ProcessingStage.OriginalCopy, bytesRead = copiedBytes, bytesWritten = copiedBytes)
+    if (copiedBytes <= 0L || tempFile.length() != copiedBytes) {
+        throw IOException("The image could not be copied.")
+    }
+    if (inputBytes > 0L && copiedBytes != inputBytes) {
+        throw SourceChangedException("Source changed while it was being copied.")
+    }
+    return PreparedBatchOutput(
+        decision = ProcessingDecision.CopiedOriginal,
+        outputBytes = copiedBytes,
+        message = null
+    )
+}
+
 private suspend fun fallbackToOriginalOrFail(
     context: Context,
     inputUri: Uri,
     inputBytes: Long,
-    outputUri: Uri,
+    outputFile: File,
     outputLabel: String,
     expectedDimensions: JpegDimensions?,
     metrics: ProcessingMetricsRecorder
 ): PreparedBatchOutput {
     val copiedBytes = metrics.measure(ProcessingStage.OriginalCopy) {
-        context.copyUriContent(inputUri, outputUri)
+        context.copyUriContent(inputUri, outputFile.toUri())
     }
     metrics.recordIo(
         stage = ProcessingStage.OriginalCopy,
@@ -277,10 +307,12 @@ private suspend fun fallbackToOriginalOrFail(
     if (inputBytes > 0L && copiedBytes != inputBytes) {
         throw SourceChangedException("Source changed while it was being copied.")
     }
+    // Only the date is added; the image data itself stays exactly as it was.
+    context.addMissingDateTaken(inputUri, outputFile, expectedDimensions, allowTrailingBytes = true)
 
     return PreparedBatchOutput(
         decision = ProcessingDecision.CopiedOriginal,
-        outputBytes = copiedBytes,
+        outputBytes = outputFile.length(),
         message = outputLabel,
         expectedDimensions = expectedDimensions
     )

@@ -2,21 +2,20 @@ package com.example.slicer.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Palette matches the Photo Booth reference app (styles/tokens.css).
-internal val SlicerPrimary = Color(0xFFFF7DC9)
-private val SlicerInk = Color.Black
-internal val SlicerOnPrimary = SlicerInk
-internal val SlicerPrimaryContainer = Color(0xFFFFC8E9)
-internal val SlicerOnPrimaryContainer = SlicerOnPrimary
-internal val SlicerSecondary = SlicerInk
-internal val SlicerSecondaryContainer = Color(0xFFFFE558)
+// Ink surfaces, lime actions, and lilac highlights for progress and results.
+internal val SlicerPrimary = Color(0xFFC0F449)
+internal val SlicerOnPrimary = Color(0xFF191C20)
+internal val SlicerPrimaryContainer = Color(0xFF303D24)
+internal val SlicerOnPrimaryContainer = Color(0xFFD9F7AA)
+internal val SlicerSecondary = Color(0xFFC5B8FA)
+internal val SlicerSecondaryContainer = Color(0xFF322D45)
 internal val SlicerTertiary = SlicerSecondary
-internal val SlicerTertiaryContainer = SlicerPrimaryContainer
-internal val SlicerBackground = Color(0xFFFFFDF7)
-internal val SlicerSurface = Color.White
-internal val SlicerSurfaceVariant = Color(0xFFF3F3F3)
-internal val SlicerOnSurface = SlicerInk
-internal val SlicerOnSurfaceVariant = SlicerInk
-internal val SlicerOutline = SlicerOnSurface
-internal val SlicerError = Color(0xFFB91C1C)
-internal val SlicerOnError = Color.White
+internal val SlicerTertiaryContainer = SlicerSecondaryContainer
+internal val SlicerBackground = Color(0xFF191C20)
+internal val SlicerSurface = Color(0xFF22262B)
+internal val SlicerSurfaceVariant = Color(0xFF30353C)
+internal val SlicerOnSurface = Color(0xFFF2F3EE)
+internal val SlicerOnSurfaceVariant = Color(0xFFB8BEC5)
+internal val SlicerOutline = Color(0xFF929BA6)
+internal val SlicerError = Color(0xFFFFB4AB)
+internal val SlicerOnError = Color(0xFF690005)

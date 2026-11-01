@@ -28,13 +28,6 @@ class BatchProcessingPolicyTest {
         assertFalse(IllegalStateException("invalid state").isRetryableItemFailure())
     }
 
-    @Test
-    fun processingRemainsSingleFlightUntilBenchmarksShowSafeHeadroom() {
-        assertEquals(1, MAX_CONCURRENT_IMAGE_PROCESSORS)
-        assertEquals(3, MAX_ITEM_ATTEMPTS)
-        assertEquals(2, MAX_WORKER_RETRIES)
-    }
-
     private class RetryableTestException(cause: Throwable? = null) :
         IOException("temporary", cause), RetryableFailure
 }

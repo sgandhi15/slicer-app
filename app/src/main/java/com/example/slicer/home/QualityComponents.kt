@@ -4,7 +4,16 @@ import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.QUALITY_PRESETS
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.remember
+import com.example.slicer.ui.theme.pressSquish
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.selection.selectable
@@ -58,25 +67,38 @@ internal fun QualityStepContent(
         Column(modifier = Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             QUALITY_PRESETS.forEach { preset ->
                 val isSelected = quality == preset.quality
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 64.dp)
-                        .testTag("quality-preset-${preset.label.lowercase()}")
-                        .selectable(selected = isSelected, enabled = controlsEnabled, role = Role.RadioButton) {
-                            showCustomQuality = false
-                            onQualityChange(preset.quality)
-                        },
-                    shape = MaterialTheme.shapes.small,
-                    color = if (isSelected) {
+                val interactionSource = remember { MutableInteractionSource() }
+                val cardColor by animateColorAsState(
+                    if (isSelected) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                     } else {
                         MaterialTheme.colorScheme.surface
                     },
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = if (isSelected) 0.5f else 0.10f)
-                    )
+                    label = "preset-color"
+                )
+                val borderColor by animateColorAsState(
+                    MaterialTheme.colorScheme.outline.copy(alpha = if (isSelected) 0.5f else 0.10f),
+                    label = "preset-border"
+                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 64.dp)
+                        .pressSquish(interactionSource, pressedScale = 0.98f)
+                        .testTag("quality-preset-${preset.label.lowercase()}")
+                        .selectable(
+                            selected = isSelected,
+                            enabled = controlsEnabled,
+                            role = Role.RadioButton,
+                            interactionSource = interactionSource,
+                            indication = null
+                        ) {
+                            showCustomQuality = false
+                            onQualityChange(preset.quality)
+                        },
+                    shape = MaterialTheme.shapes.small,
+                    color = cardColor,
+                    border = BorderStroke(width = 1.dp, color = borderColor)
                 ) {
                     Row(
                         modifier = Modifier
@@ -136,7 +158,12 @@ internal fun QualityStepContent(
                 Text(if (showCustomQuality) "Hide custom quality" else "Custom quality")
             }
 
-            if (showCustomQuality) {
+            AnimatedVisibility(
+                visible = showCustomQuality,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+              Column {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Quality: $quality%",
@@ -151,6 +178,7 @@ internal fun QualityStepContent(
                     valueRange = MIN_QUALITY.toFloat()..MAX_QUALITY.toFloat(),
                     enabled = controlsEnabled
                 )
+              }
             }
         }
     }

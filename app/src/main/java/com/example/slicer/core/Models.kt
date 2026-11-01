@@ -2,8 +2,10 @@ package com.example.slicer.core
 
 import android.net.Uri
 import android.os.Environment
+import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
 import java.io.IOException
+import java.util.Locale
 
 internal const val DEFAULT_QUALITY = 80
 internal const val MIN_QUALITY = 1
@@ -22,22 +24,20 @@ internal val JPEG_MIME_TYPES = arrayOf("image/jpeg", "image/jpg")
 internal val JPEG_EXTENSIONS = arrayOf("jpg", "jpeg")
 internal val JPEG_MIME_TYPE_SET = JPEG_MIME_TYPES.toSet()
 internal val JPEG_EXTENSION_SET = JPEG_EXTENSIONS.toSet()
-internal const val OUTPUT_MIME_TYPE = "image/jpeg"
+
+/** JPEGs are compressed; every other image type is copied byte for byte. */
+internal fun isJpegFileName(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase(Locale.ROOT) in JPEG_EXTENSION_SET
+
+/** The image type implied by a file name's extension, or null when it isn't a known image type. */
+internal fun imageMimeTypeForName(name: String): String? =
+    MimeTypeMap.getSingleton()
+        .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase(Locale.ROOT))
+        ?.takeIf { it.startsWith("image/") }
 
 internal const val DEFAULT_COPY_BUFFER_BYTES = 16_384
 
-internal const val JPEG_START_OF_IMAGE: Int = 0xFFD8
-internal const val JPEG_START_OF_SCAN: Int = 0xFFDA
-internal const val JPEG_END_OF_IMAGE: Int = 0xFFD9
-internal const val JPEG_SEGMENT_APP1: Int = 0xFFE1
-internal const val JPEG_SEGMENT_APP2: Int = 0xFFE2
-internal const val JPEG_SEGMENT_APP13: Int = 0xFFED
-internal const val JPEG_SEGMENT_APP0: Int = 0xFFE0
-internal const val JPEG_SEGMENT_APPF: Int = 0xFFEF
-internal const val JPEG_SEGMENT_COMMENT: Int = 0xFFFE
-
 internal const val LOG_TAG = "Slicer"
-
 
 internal interface RetryableFailure
 

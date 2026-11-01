@@ -6,6 +6,14 @@ import com.example.slicer.storage.readableName
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.LruCache
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -46,6 +54,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.slicer.ui.theme.pressSquish
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -60,7 +70,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -74,49 +83,80 @@ internal fun BatchSetupContent(
     onRemoveImage: (Uri) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (selectedImages.isEmpty()) {
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Choose images",
-                    style = MaterialTheme.typography.displayMedium.copy(
-                        fontSize = 32.sp,
-                        lineHeight = 40.sp,
-                        letterSpacing = (-1).sp
-                    )
-                )
-                Text(
-                    "Make your JPEGs smaller.",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            }
-            EmptyImagePicker(
-                enabled = controlsEnabled,
-                onClick = onSelectImages,
-                modifier = Modifier.aspectRatio(1.4f)
-            )
+    // Fade between the empty picker and the grid instead of snapping when a selection lands.
+    AnimatedContent(
+        targetState = selectedImages.isEmpty(),
+        transitionSpec = { fadeIn(tween(220, delayMillis = 60)) togetherWith fadeOut(tween(120)) },
+        modifier = modifier,
+        label = "setup-content"
+    ) { isEmpty ->
+        if (isEmpty) {
+            EmptySetupContent(isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages)
+        } else {
+            SelectedImagesGrid(selectedImages, isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages, onRemoveImage)
+        }
+    }
+}
 
-            if (isValidating) {
-                SelectionValidationPanel(validatedCount, validationTotal)
-            }
-
+@Composable
+private fun EmptySetupContent(
+    isValidating: Boolean,
+    validatedCount: Int,
+    validationTotal: Int,
+    controlsEnabled: Boolean,
+    onSelectImages: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                "On-device compression. Originals stay untouched.",
-                style = MaterialTheme.typography.bodyMedium
+                "Choose images",
+                style = MaterialTheme.typography.displayMedium.copy(
+                    fontSize = 32.sp,
+                    lineHeight = 38.sp,
+                    letterSpacing = (-0.5).sp
+                )
+            )
+            Text(
+                "Make your photos smaller.",
+                style = MaterialTheme.typography.bodyLarge
             )
         }
-        return
-    }
+        EmptyImagePicker(
+            enabled = controlsEnabled,
+            onClick = onSelectImages,
+            modifier = Modifier.aspectRatio(1.4f)
+        )
 
+        if (isValidating) {
+            SelectionValidationPanel(validatedCount, validationTotal)
+        }
+
+        Text(
+            "On-device compression. Originals stay untouched.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun SelectedImagesGrid(
+    selectedImages: List<Uri>,
+    isValidating: Boolean,
+    validatedCount: Int,
+    validationTotal: Int,
+    controlsEnabled: Boolean,
+    onSelectImages: () -> Unit,
+    onRemoveImage: (Uri) -> Unit
+) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -141,7 +181,9 @@ internal fun BatchSetupContent(
             SelectedImageTile(
                 uri = uri,
                 enabled = controlsEnabled,
-                onRemove = { onRemoveImage(uri) }
+                onRemove = { onRemoveImage(uri) },
+                // Neighbours slide into the gap when a tile is removed.
+                modifier = Modifier.animateItem()
             )
         }
 
@@ -182,12 +224,15 @@ private fun EmptyImagePicker(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            .pressSquish(interactionSource, pressedScale = 0.97f)
             .testTag("batch-image-picker"),
         enabled = enabled,
         onClick = onClick,
+        interactionSource = interactionSource,
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.primary,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
@@ -203,18 +248,18 @@ private fun EmptyImagePicker(
                 text = "＋",
                 style = MaterialTheme.typography.displaySmall,
                 fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onPrimary
             )
             Text(
                 text = "Select images",
                 style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onPrimary
             )
             Text(
                 text = "Up to $MAX_SELECTED_IMAGES images",
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onPrimary
             )
         }
     }
@@ -251,29 +296,28 @@ private fun SelectedImagesHeader(
 private fun SelectedImageTile(
     uri: Uri,
     enabled: Boolean,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
+    val key = uri.toString()
+    var bitmap by remember(uri) { mutableStateOf(ThumbnailCache.get(key)) }
+    // Tiles already in the cache appear instantly; new ones fade in rather than pop.
+    val imageAlpha by animateFloatAsState(if (bitmap != null) 1f else 0f, tween(220), label = "thumb-fade")
 
     LaunchedEffect(uri) {
-        var loadedBitmap: Bitmap? = null
-        try {
-            loadedBitmap = withContext(Dispatchers.IO) {
-                context.loadBitmapForPreview(uri, maxDimension = 512)
-            }
-            bitmap = loadedBitmap
-            awaitCancellation()
-        } finally {
-            if (bitmap === loadedBitmap) {
-                bitmap = null
-            }
-            loadedBitmap?.recycle()
+        if (bitmap != null) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) {
+            context.loadBitmapForPreview(uri, maxDimension = 512)
+        }
+        if (loaded != null) {
+            ThumbnailCache.put(key, loaded)
+            bitmap = loaded
         }
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .padding(horizontal = 4.dp)
             .fillMaxWidth()
             .aspectRatio(1f)
@@ -283,9 +327,9 @@ private fun SelectedImageTile(
     ) {
         bitmap?.let { loadedBitmap ->
             Image(
-                bitmap = loadedBitmap.asImageBitmap(),
+                bitmap = remember(loadedBitmap) { loadedBitmap.asImageBitmap() },
                 contentDescription = "Selected image",
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = imageAlpha },
                 contentScale = ContentScale.Crop
             )
         }
@@ -307,6 +351,22 @@ private fun SelectedImageTile(
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+    }
+}
+
+/**
+ * Keeps decoded tiles around, so scrolling back up or returning to this screen does not decode
+ * the same photos again. Bitmaps are never recycled by hand: one may still be on screen when it is
+ * evicted, and the garbage collector frees it once nothing draws it.
+ */
+private object ThumbnailCache {
+    private val cache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) {
+        override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
+    }
+
+    fun get(key: String): Bitmap? = cache.get(key)
+    fun put(key: String, bitmap: Bitmap) {
+        cache.put(key, bitmap)
     }
 }
 

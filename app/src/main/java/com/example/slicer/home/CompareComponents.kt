@@ -1,6 +1,14 @@
 package com.example.slicer.home
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -12,15 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.navigationBarsPadding
 import com.example.slicer.ui.theme.SlicerButton as Button
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,11 +47,9 @@ private val PREVIEW_MAX_HEIGHT = 560.dp
 
 @Composable
 internal fun CompareScreen(
-    comparePosition: Float,
     beforeImage: ImageBitmap?,
     afterImage: ImageBitmap?,
     isGeneratingComparison: Boolean,
-    onCompareChange: (Float) -> Unit,
     onBack: () -> Unit,
     controlsEnabled: Boolean,
     notice: String?
@@ -71,19 +74,13 @@ internal fun CompareScreen(
             BeforeAfterPanel(
                 beforeImage = beforeImage,
                 afterImage = afterImage,
-                splitPosition = comparePosition,
-                onSplitChange = onCompareChange,
-                controlsEnabled = controlsEnabled,
-                showSlider = false
+                isLoading = isGeneratingComparison,
+                controlsEnabled = controlsEnabled
             )
 
             if (notice != null) {
                 Spacer(modifier = Modifier.height(10.dp))
                 NoticeText(message = notice)
-            } else if (isGeneratingComparison) {
-                Spacer(modifier = Modifier.height(10.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                NoticeText(message = "Loading comparison images")
             }
 
         }
@@ -107,35 +104,40 @@ internal fun CompareScreen(
 private fun BeforeAfterPanel(
     beforeImage: ImageBitmap?,
     afterImage: ImageBitmap?,
-    splitPosition: Float,
-    onSplitChange: (Float) -> Unit,
-    controlsEnabled: Boolean,
-    showSlider: Boolean
+    isLoading: Boolean,
+    controlsEnabled: Boolean
 ) {
     if (beforeImage == null && afterImage == null) {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(260.dp)
+                .height(PREVIEW_MIN_HEIGHT)
+                .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.medium)
         ) {
-            Text(
-                text = "No preview available",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (isLoading) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            } else {
+                Text(
+                    text = "No preview available",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         return
     }
 
-    val split = splitPosition.coerceIn(0.05f, 0.95f)
+    // The divider lives here and is only read while drawing, so dragging redraws one canvas
+    // instead of recomposing the whole screen on every frame.
+    var split by remember { mutableFloatStateOf(0.5f) }
     val canCompare = beforeImage != null && afterImage != null
     val dividerEnabled = controlsEnabled && canCompare
     val splitColor = MaterialTheme.colorScheme.onSurface
-    val splitColorSoft = splitColor.copy(alpha = 0.35f)
+    val handleInk = MaterialTheme.colorScheme.background
     var panelWidthPx by remember { mutableFloatStateOf(0f) }
-    val currentSplit by rememberUpdatedState(split)
-    val currentOnSplitChange by rememberUpdatedState(onSplitChange)
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, tween(320)) }
 
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -166,6 +168,12 @@ private fun BeforeAfterPanel(
                 Canvas(
                     modifier = Modifier
                         .matchParentSize()
+                        .graphicsLayer {
+                            alpha = reveal.value
+                            val grow = 0.97f + 0.03f * reveal.value
+                            scaleX = grow
+                            scaleY = grow
+                        }
                         .onSizeChanged { panelSize ->
                             panelWidthPx = panelSize.width.toFloat()
                         }
@@ -175,14 +183,13 @@ private fun BeforeAfterPanel(
                                     detectHorizontalDragGestures(
                                         onDragStart = { offset ->
                                             if (panelWidthPx > 0f) {
-                                                currentOnSplitChange((offset.x / panelWidthPx).coerceIn(0.05f, 0.95f))
+                                                split = (offset.x / panelWidthPx).coerceIn(0.05f, 0.95f)
                                             }
                                         },
                                         onHorizontalDrag = { change, dragAmount ->
                                             change.consume()
                                             if (panelWidthPx > 0f) {
-                                                val nextSplit = currentSplit + (dragAmount / panelWidthPx)
-                                                currentOnSplitChange(nextSplit.coerceIn(0.05f, 0.95f))
+                                                split = (split + dragAmount / panelWidthPx).coerceIn(0.05f, 0.95f)
                                             }
                                         }
                                     )
@@ -261,11 +268,24 @@ private fun BeforeAfterPanel(
                                     strokeWidth = 3.dp.toPx()
                                 )
 
-                                drawLine(
-                                    color = splitColorSoft,
-                                    start = Offset(dividerX + 4.dp.toPx(), 0f),
-                                    end = Offset(dividerX + 4.dp.toPx(), size.height),
-                                    strokeWidth = 3.dp.toPx()
+                                // A round grab handle with arrows, so the divider reads as draggable.
+                                val handle = Offset(dividerX, size.height / 2f)
+                                val radius = 20.dp.toPx()
+                                drawCircle(splitColor, radius, handle)
+                                val arrow = 5.dp.toPx()
+                                val gap = 4.dp.toPx()
+                                drawPath(
+                                    Path().apply {
+                                        moveTo(handle.x - gap, handle.y - arrow)
+                                        lineTo(handle.x - gap - arrow, handle.y)
+                                        lineTo(handle.x - gap, handle.y + arrow)
+                                        close()
+                                        moveTo(handle.x + gap, handle.y - arrow)
+                                        lineTo(handle.x + gap + arrow, handle.y)
+                                        lineTo(handle.x + gap, handle.y + arrow)
+                                        close()
+                                    },
+                                    handleInk
                                 )
                             } else {
                                 drawContainedImage(compressedImage)
@@ -273,17 +293,25 @@ private fun BeforeAfterPanel(
                         }
                     }
                 }
+                if (dividerEnabled) {
+                    CompareLabel("Compressed", Modifier.align(Alignment.TopStart))
+                    CompareLabel("Original", Modifier.align(Alignment.TopEnd))
+                }
             }
         }
 
-        if (showSlider) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Slider(
-                value = split,
-                onValueChange = onSplitChange,
-                valueRange = 0.05f..0.95f,
-                enabled = dividerEnabled
-            )
-        }
     }
+}
+
+@Composable
+private fun CompareLabel(text: String, modifier: Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = Color.White,
+        modifier = modifier
+            .padding(10.dp)
+            .background(Color.Black.copy(alpha = 0.55f), MaterialTheme.shapes.small)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    )
 }

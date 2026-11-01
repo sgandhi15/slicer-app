@@ -15,6 +15,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.example.slicer.MainActivity
 import com.example.slicer.R
+import com.example.slicer.core.isJpegFileName
 import com.example.slicer.SlicerApplication
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.ProcessingDecision
@@ -168,7 +169,8 @@ internal class BatchWorker(
                             )
                         }
                     },
-                    metrics = metrics
+                    metrics = metrics,
+                    passThrough = !isJpegFileName(outputName)
                 )
                 val published = metrics.measure(ProcessingStage.Publication) {
                     applicationContext.publishPreparedOutput(
@@ -414,7 +416,7 @@ internal class BatchWorker(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.logo_monochrome)
             .setContentTitle("Slicer is compressing images")
             .setContentText(text)
             .setContentIntent(pendingIntent)

@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Slicer" parent="android:Theme.Material.Light.NoActionBar">
-        <!-- The app owns its light palette, even when the device uses dark mode. -->
+    <style name="Theme.Slicer" parent="android:Theme.Material.NoActionBar">
+        <!-- The app owns its Ink + Lime palette regardless of the device appearance. -->
         <item name="android:forceDarkAllowed">false</item>
-        <item name="android:textColorPrimary">@color/slicer_ink</item>
-        <item name="android:textColorSecondary">@color/slicer_ink</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:colorAccent">@color/slicer_pink</item>
+        <item name="android:textColorPrimary">@color/slicer_text</item>
+        <item name="android:textColorSecondary">@color/slicer_text_secondary</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/slicer_lime</item>
         <item name="android:navigationBarColor">@color/slicer_paper</item>
         <item name="android:statusBarColor">@color/slicer_paper</item>
         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/logo</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_animated</item>
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@color/splash_icon_background</item>
     </style>
 </resources>

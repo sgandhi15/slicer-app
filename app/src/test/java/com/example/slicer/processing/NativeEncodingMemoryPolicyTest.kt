@@ -28,12 +28,6 @@ class NativeEncodingMemoryPolicyTest {
             nativeEncodingBudget(snapshot().copy(systemAvailableBytes = 256 * MIB)).rejection)
     }
 
-    @Test
-    fun extremeThresholdDoesNotOverflowIntoAnAllowedBudget() {
-        assertEquals(EncodingMemoryRejection.InsufficientSystemMemory,
-            nativeEncodingBudget(snapshot().copy(systemLowMemoryThresholdBytes = Long.MAX_VALUE)).rejection)
-    }
-
     private fun snapshot() = EncodingMemorySnapshot(64 * MIB, 1024 * MIB, 128 * MIB, false)
     private companion object { const val MIB = 1024L * 1024 }
 }

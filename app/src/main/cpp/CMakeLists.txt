@@ -46,6 +46,8 @@ ExternalProject_Add(
     GIT_SHALLOW TRUE
     CMAKE_ARGS
         -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+        # Use the SDK's build tool, not whatever happens to be on PATH.
+        -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
         -DANDROID_PLATFORM=${ANDROID_PLATFORM}
         -DANDROID_ABI=${ANDROID_ABI}
         -DCMAKE_ANDROID_ARCH_ABI=${CMAKE_ANDROID_ARCH_ABI}

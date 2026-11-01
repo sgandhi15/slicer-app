@@ -1,28 +1,37 @@
 package com.example.slicer.ui.theme
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.drawOutline
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 
-/** Reserve space for the solid shadow so scroll containers do not clip it. */
+/** Shrinks slightly while pressed and springs back on release, so taps feel physical. */
 @Composable
-internal fun Modifier.hardShadow(shape: Shape = MaterialTheme.shapes.small): Modifier {
-    val ink = MaterialTheme.colorScheme.outline
-    return padding(end = 4.dp, bottom = 4.dp).drawBehind {
-        val outline = shape.createOutline(size, layoutDirection, this)
-        translate(4.dp.toPx(), 4.dp.toPx()) { drawOutline(outline, ink) }
+internal fun Modifier.pressSquish(interactionSource: MutableInteractionSource, pressedScale: Float = 0.96f): Modifier {
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = spring(dampingRatio = 0.45f, stiffness = 700f),
+        label = "press-squish"
+    )
+    // Read during drawing so a press never recomposes the button.
+    return graphicsLayer {
+        scaleX = scale
+        scaleY = scale
     }
 }
 
@@ -35,12 +44,14 @@ internal fun SlicerButton(
     colors: ButtonColors = ButtonDefaults.buttonColors(),
     content: @Composable RowScope.() -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier,
+        modifier = modifier.pressSquish(interactionSource),
+        interactionSource = interactionSource,
         shape = shape,
-        colors = colors,
+        colors = colors.copy(disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant),
         elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp, 0.dp, 0.dp, 0.dp),
         content = content
     )
@@ -54,13 +65,18 @@ internal fun SlicerOutlinedButton(
     shape: Shape = MaterialTheme.shapes.small,
     content: @Composable RowScope.() -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     androidx.compose.material3.OutlinedButton(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.pressSquish(interactionSource),
+        interactionSource = interactionSource,
         enabled = enabled,
         shape = shape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        ),
         content = content
     )
 }
@@ -73,9 +89,11 @@ internal fun SlicerTextButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     TextButton(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.pressSquish(interactionSource),
+        interactionSource = interactionSource,
         enabled = enabled,
         colors = ButtonDefaults.textButtonColors(
             contentColor = MaterialTheme.colorScheme.onSurface,

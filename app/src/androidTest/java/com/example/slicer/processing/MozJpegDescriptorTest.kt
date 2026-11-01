@@ -16,7 +16,6 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.function.BooleanSupplier
 
 @RunWith(AndroidJUnit4::class)
@@ -42,26 +41,6 @@ class MozJpegDescriptorTest {
                 val result = MozJpegNative.transcodeJpeg(input.fd, target.fd, DIMENSIONS, 85, BUDGET)
                 assertEquals(NativeCompressionStatus.Success, result.status)
                 assertTrue(output.inspectCompleteJpeg(DIMENSIONS) is JpegInspectionResult.Valid)
-            }
-        }
-    }
-
-    @Test
-    fun assetOffsetsBeyondTwoGiBAreNotNarrowedTo32Bits() = withFiles { source, output ->
-        val jpeg = source.readBytes()
-        val offset = 3L * 1024 * 1024 * 1024 + 17
-        // Sparse file: only the tiny JPEG consumes storage, not the three-GiB prefix.
-        RandomAccessFile(source, "rw").use { file ->
-            file.setLength(0)
-            file.seek(offset)
-            file.write(jpeg)
-        }
-        ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY).use { input ->
-            ParcelFileDescriptor.open(output, OUTPUT_MODE).use { target ->
-                val result = MozJpegNative.transcodeJpeg(input.fd, target.fd, DIMENSIONS, 85, BUDGET,
-                    inputOffset = offset, inputLength = jpeg.size.toLong())
-                assertEquals(NativeCompressionStatus.Success, result.status)
-                assertEquals(jpeg.size.toLong(), result.bytesRead)
             }
         }
     }

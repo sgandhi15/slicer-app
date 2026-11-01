@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="slicer_ink">#000000</color>
-    <color name="slicer_pink">#FF7DC9</color>
-    <color name="slicer_paper">#FFFDF7</color>
-    <color name="splash_background">#FFFDF7</color>
-    <color name="splash_icon_background">#FFE558</color>
-    <color name="slicer_yellow">#FFE558</color>
+    <color name="slicer_paper">#191C20</color>
+    <color name="slicer_text">#F2F3EE</color>
+    <color name="slicer_text_secondary">#B8BEC5</color>
+    <color name="slicer_lime">#C0F449</color>
+    <color name="splash_background">@color/slicer_paper</color>
+    <color name="splash_icon_background">@color/slicer_lime</color>
 </resources>
