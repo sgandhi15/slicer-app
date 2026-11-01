@@ -433,7 +433,8 @@ private class SourceMetadataPolicy {
         val thumbnailWidth = prefix[12].toInt() and 0xFF
         val thumbnailHeight = prefix[13].toInt() and 0xFF
         val expectedPayloadBytes = JFIF_HEADER_BYTES + 3 * thumbnailWidth * thumbnailHeight
-        if (densityUnits !in 0..2 || xDensity <= 0 || yDensity <= 0 || payloadBytes != expectedPayloadBytes) {
+        // Phones and cameras often pad this segment; only a truncated one is unsafe to copy.
+        if (densityUnits !in 0..2 || xDensity <= 0 || yDensity <= 0 || payloadBytes < expectedPayloadBytes) {
             invalidHeader("Source JPEG contains an invalid JFIF segment.")
         }
         return true

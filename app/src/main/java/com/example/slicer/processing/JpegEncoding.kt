@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 import java.util.function.BooleanSupplier
 
 internal data class JpegCompressionResult(
@@ -27,11 +28,21 @@ internal data class JpegCompressionResult(
     val outputDimensions: JpegDimensions? = dimensions
 )
 
-// libjpeg can only shrink by n/8 while decoding; 8 means full size.
-internal fun resizeScaleNumerator(dimensions: JpegDimensions, maxDimension: Int): Int {
+internal class ResizePlan(val scaleNumerator: Int, val output: JpegDimensions)
+
+// libjpeg can only shrink by n/8 while decoding, so decode to the nearest step above the limit
+// and let the native resample reach the exact size.
+internal fun resizePlan(dimensions: JpegDimensions, maxDimension: Int): ResizePlan {
     val longest = maxOf(dimensions.width, dimensions.height)
-    if (maxDimension == FULL_SIZE || longest <= maxDimension) return 8
-    return (8L * maxDimension / longest).toInt().coerceIn(1, 7)
+    if (maxDimension == FULL_SIZE || longest <= maxDimension) return ResizePlan(8, dimensions)
+    val numerator = (1..8).first { (longest * it + 7) / 8 >= maxDimension }
+    val decoded = dimensions.scaledBy(numerator)
+    val ratio = maxDimension.toDouble() / maxOf(decoded.width, decoded.height)
+    val output = JpegDimensions(
+        width = (decoded.width * ratio).roundToInt().coerceIn(1, decoded.width),
+        height = (decoded.height * ratio).roundToInt().coerceIn(1, decoded.height)
+    )
+    return ResizePlan(numerator, output)
 }
 
 // Same rounding libjpeg uses for its output size.
@@ -98,8 +109,8 @@ internal suspend fun Context.compressJpegImage(
             }
             if (knownDimensions == null) onDimensionsRead(dimensions)
 
-            val scaleNumerator = resizeScaleNumerator(dimensions, maxDimension)
-            if (scaleNumerator == 8 && isAlreadyCompressedBelow(inputUri, quality)) {
+            val resize = resizePlan(dimensions, maxDimension)
+            if (resize.output == dimensions && isAlreadyCompressedBelow(inputUri, quality)) {
                 return@runCatching JpegCompressionResult(
                     succeeded = false,
                     message = "Already compressed more than this quality would.",
@@ -128,7 +139,8 @@ internal suspend fun Context.compressJpegImage(
                             cancelled = BooleanSupplier { !coroutineContext.isActive },
                             inputOffset = input.startOffset,
                             inputLength = input.declaredLength,
-                            scaleNumerator = scaleNumerator
+                            scaleNumerator = resize.scaleNumerator,
+                            outputDimensions = resize.output.takeIf { it != dimensions.scaledBy(resize.scaleNumerator) }
                         )
                     }
                 } ?: NativeCompressionResult(NativeCompressionStatus.IoFailure)
@@ -153,7 +165,7 @@ internal suspend fun Context.compressJpegImage(
             JpegCompressionResult(
                 succeeded = true,
                 dimensions = dimensions,
-                outputDimensions = dimensions.scaledBy(scaleNumerator)
+                outputDimensions = resize.output
             )
         }.getOrElse { error ->
             if (error is CancellationException || error is JpegStatePersistenceException ||

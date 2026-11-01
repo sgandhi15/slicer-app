@@ -405,7 +405,9 @@ private fun BatchResultRow(
             // Byte counts are emphasized; the trailing note stays regular weight.
             val sizes = buildAnnotatedString {
                 val emphasis = SpanStyle(fontWeight = FontWeight.SemiBold)
-                if (result.inputBytes > 0L) {
+                if (copiedAsIs) {
+                    withStyle(emphasis) { append(formatByteCount(result.outputBytes)) }
+                } else if (result.inputBytes > 0L) {
                     withStyle(emphasis) {
                         append("${formatByteCount(result.inputBytes)} -> ${formatByteCount(result.outputBytes)}")
                     }
@@ -426,7 +428,11 @@ private fun BatchResultRow(
                 Text(
                     text = result.message,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = if (result.decision == ProcessingDecision.Failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )

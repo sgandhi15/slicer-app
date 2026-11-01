@@ -247,8 +247,10 @@ internal fun Context.resolveContentSize(uri: Uri): Long {
 }
 
 // Gallery photos already have cached thumbnails; asking for them avoids decoding the full photo.
+// Some providers return the tiny preview embedded in the JPEG instead, which looks pixelated.
 internal fun Context.loadTileThumbnail(uri: Uri, size: Int = 512): Bitmap? =
     runCatching { contentResolver.loadThumbnail(uri, Size(size, size), null) }.getOrNull()
+        ?.takeIf { maxOf(it.width, it.height) >= size / 2 }
         ?: loadBitmapForPreview(uri, maxDimension = size)
 
 internal fun Context.loadBitmapForPreview(uri: Uri, maxDimension: Int = 1400): Bitmap? {

@@ -43,6 +43,8 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 private val PREVIEW_MIN_HEIGHT = 320.dp
+// Wide photos get a shorter panel so the divider and labels sit on the image, not in empty bands.
+private val PREVIEW_MIN_FITTED_HEIGHT = 160.dp
 private val PREVIEW_MAX_HEIGHT = 560.dp
 
 @Composable
@@ -154,7 +156,7 @@ private fun BeforeAfterPanel(
 
             val panelHeight = if (imageAspect > 0f) {
                 (maxWidth / imageAspect)
-                    .coerceAtLeast(PREVIEW_MIN_HEIGHT)
+                    .coerceAtLeast(PREVIEW_MIN_FITTED_HEIGHT)
                     .coerceAtMost(PREVIEW_MAX_HEIGHT)
             } else {
                 PREVIEW_MIN_HEIGHT
@@ -263,13 +265,13 @@ private fun BeforeAfterPanel(
 
                                 drawLine(
                                     color = splitColor,
-                                    start = Offset(dividerX, 0f),
-                                    end = Offset(dividerX, size.height),
+                                    start = Offset(dividerX, sharedBounds.top),
+                                    end = Offset(dividerX, sharedBounds.bottom),
                                     strokeWidth = 3.dp.toPx()
                                 )
 
                                 // A round grab handle with arrows, so the divider reads as draggable.
-                                val handle = Offset(dividerX, size.height / 2f)
+                                val handle = Offset(dividerX, sharedBounds.center.y)
                                 val radius = 20.dp.toPx()
                                 drawCircle(splitColor, radius, handle)
                                 val arrow = 5.dp.toPx()

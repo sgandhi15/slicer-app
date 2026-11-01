@@ -109,7 +109,71 @@ void configureMemory(j_common_ptr codec, State* state) {
     codec->progress = &state->progress;
 }
 
-void run(State* state, int width, int height, int quality, int scaleNumerator) {
+// Bilinear sample positions along one axis, in 8-bit fixed point.
+struct Taps {
+    int* first;
+    int* second;
+    int* weight;
+};
+
+Taps makeTaps(j_common_ptr codec, JDIMENSION source, JDIMENSION target) {
+    auto alloc = [&](size_t count) {
+        return static_cast<int*>((*codec->mem->alloc_small)(codec, JPOOL_IMAGE, count * sizeof(int)));
+    };
+    Taps taps{alloc(target), alloc(target), alloc(target)};
+    const double scale = static_cast<double>(source) / target;
+    for (JDIMENSION i = 0; i < target; i++) {
+        const double position = std::max(0.0, (i + 0.5) * scale - 0.5);
+        const int first = std::min(static_cast<int>(position), static_cast<int>(source) - 1);
+        taps.first[i] = first;
+        taps.second[i] = std::min(first + 1, static_cast<int>(source) - 1);
+        taps.weight[i] = static_cast<int>((position - first) * 256.0 + 0.5);
+    }
+    return taps;
+}
+
+void readRow(State* state, JSAMPARRAY row) {
+    checkpoint(state);
+    if (jpeg_read_scanlines(&state->decoder, row, 1) != 1) fail(state, TranscodeStatus::InvalidData);
+}
+
+// Streams the decoded rows through a bilinear resample, holding only two decoded rows at a time.
+void writeResampled(State* state, JDIMENSION targetWidth, JDIMENSION targetHeight) {
+    auto* decoder = &state->decoder;
+    auto* codec = reinterpret_cast<j_common_ptr>(decoder);
+    const JDIMENSION sourceWidth = decoder->output_width;
+    JSAMPARRAY lines = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, sourceWidth * 3, 2);
+    JSAMPARRAY out = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, targetWidth * 3, 1);
+    const Taps columns = makeTaps(codec, sourceWidth, targetWidth);
+    const Taps rows = makeTaps(codec, decoder->output_height, targetHeight);
+    JSAMPROW previous = lines[0];
+    JSAMPROW current = lines[1];
+    int currentIndex = -1;
+    for (JDIMENSION y = 0; y < targetHeight; y++) {
+        while (currentIndex < rows.second[y]) {
+            std::swap(previous, current);
+            readRow(state, &current);
+            currentIndex++;
+        }
+        const JSAMPROW top = rows.first[y] == currentIndex ? current : previous;
+        const int wy = rows.weight[y];
+        for (JDIMENSION x = 0; x < targetWidth; x++) {
+            const int a = columns.first[x] * 3;
+            const int b = columns.second[x] * 3;
+            const int wx = columns.weight[x];
+            for (int c = 0; c < 3; c++) {
+                const int upper = top[a + c] * (256 - wx) + top[b + c] * wx;
+                const int lower = current[a + c] * (256 - wx) + current[b + c] * wx;
+                out[0][x * 3 + c] = static_cast<JSAMPLE>((upper * (256 - wy) + lower * wy + 32768) >> 16);
+            }
+        }
+        if (jpeg_write_scanlines(&state->encoder, out, 1) != 1) fail(state, TranscodeStatus::InvalidData);
+    }
+    while (decoder->output_scanline < decoder->output_height) readRow(state, &current);
+}
+
+void run(State* state, int width, int height, int quality, int scaleNumerator,
+         int outputWidth, int outputHeight) {
     auto* decoder = &state->decoder;
     auto* encoder = &state->encoder;
     checkpoint(state);
@@ -142,11 +206,16 @@ void run(State* state, int width, int height, int quality, int scaleNumerator) {
     decoder->scale_num = static_cast<unsigned int>(scaleNumerator);
     decoder->scale_denom = 8;
     jpeg_calc_output_dimensions(decoder);
+    const JDIMENSION targetWidth = outputWidth > 0 ? outputWidth : decoder->output_width;
+    const JDIMENSION targetHeight = outputHeight > 0 ? outputHeight : decoder->output_height;
+    if (targetWidth > decoder->output_width || targetHeight > decoder->output_height) {
+        fail(state, TranscodeStatus::Unsupported);
+    }
     jpeg_create_compress(encoder);
     configureMemory(reinterpret_cast<j_common_ptr>(encoder), state);
     jpeg_stdio_dest(encoder, state->output);
-    encoder->image_width = decoder->output_width;
-    encoder->image_height = decoder->output_height;
+    encoder->image_width = targetWidth;
+    encoder->image_height = targetHeight;
     encoder->input_components = 3;
     encoder->in_color_space = JCS_RGB;
     jpeg_c_set_int_param(encoder, JINT_COMPRESS_PROFILE, JCP_MAX_COMPRESSION);
@@ -165,12 +234,14 @@ void run(State* state, int width, int height, int quality, int scaleNumerator) {
     jpeg_simple_progression(encoder);
     jpeg_start_compress(encoder, TRUE);
     if (!jpeg_start_decompress(decoder)) fail(state, TranscodeStatus::InvalidData);
-    JSAMPARRAY row = (*decoder->mem->alloc_sarray)(
-        reinterpret_cast<j_common_ptr>(decoder), JPOOL_IMAGE, decoder->output_width * 3, 1);
-    while (decoder->output_scanline < decoder->output_height) {
-        checkpoint(state);
-        if (jpeg_read_scanlines(decoder, row, 1) != 1 || jpeg_write_scanlines(encoder, row, 1) != 1) {
-            fail(state, TranscodeStatus::InvalidData);
+    if (targetWidth != decoder->output_width || targetHeight != decoder->output_height) {
+        writeResampled(state, targetWidth, targetHeight);
+    } else {
+        JSAMPARRAY row = (*decoder->mem->alloc_sarray)(
+            reinterpret_cast<j_common_ptr>(decoder), JPOOL_IMAGE, decoder->output_width * 3, 1);
+        while (decoder->output_scanline < decoder->output_height) {
+            readRow(state, row);
+            if (jpeg_write_scanlines(encoder, row, 1) != 1) fail(state, TranscodeStatus::InvalidData);
         }
     }
     if (!jpeg_finish_decompress(decoder)) fail(state, TranscodeStatus::InvalidData);
@@ -183,10 +254,11 @@ void run(State* state, int width, int height, int quality, int scaleNumerator) {
 
 TranscodeResult transcodeJpeg(FILE* input, FILE* output, int width, int height, int quality,
                               uint64_t budgetBytes, bool (*cancelled)(void*), void* token,
-                              int64_t inputLength, int scaleNumerator) {
+                              int64_t inputLength, int scaleNumerator, int outputWidth, int outputHeight) {
     if (!input || !output) return {TranscodeStatus::IoFailure, 0};
     if (width <= 0 || height <= 0 || width > JPEG_MAX_DIMENSION || height > JPEG_MAX_DIMENSION ||
-        quality < 1 || quality > 100 || scaleNumerator < 1 || scaleNumerator > 8) {
+        quality < 1 || quality > 100 || scaleNumerator < 1 || scaleNumerator > 8 ||
+        outputWidth < 0 || outputHeight < 0 || (outputWidth == 0) != (outputHeight == 0)) {
         return {TranscodeStatus::Unsupported, 0};
     }
     // Heap storage remains defined after longjmp; no C++ destructors are skipped.
@@ -205,7 +277,7 @@ TranscodeResult transcodeJpeg(FILE* input, FILE* output, int width, int height, 
     state->error.error_exit = errorExit;
     state->error.emit_message = emitMessage;
     state->progress.progress_monitor = progress;
-    if (setjmp(state->jump) == 0) run(state, width, height, quality, scaleNumerator);
+    if (setjmp(state->jump) == 0) run(state, width, height, quality, scaleNumerator, outputWidth, outputHeight);
     if (state->decoder.mem) jpeg_destroy_decompress(&state->decoder);
     if (state->encoder.mem) jpeg_destroy_compress(&state->encoder);
     const TranscodeResult result{state->status,
