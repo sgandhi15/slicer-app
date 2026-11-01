@@ -1,5 +1,7 @@
 package com.example.slicer.home
 
+import com.example.slicer.core.FULL_SIZE
+import com.example.slicer.core.MAX_DIMENSION_OPTIONS
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.QUALITY_PRESETS
@@ -41,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
@@ -183,4 +186,72 @@ internal fun QualityStepContent(
         }
     }
 
+}
+
+@Composable
+internal fun ImageSizeSection(
+    maxDimension: Int,
+    controlsEnabled: Boolean,
+    onMaxDimensionChange: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "Image size",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            MAX_DIMENSION_OPTIONS.forEach { option ->
+                val isSelected = option == maxDimension
+                val interactionSource = remember { MutableInteractionSource() }
+                val cardColor by animateColorAsState(
+                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                    label = "size-color"
+                )
+                val textColor by animateColorAsState(
+                    if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    label = "size-text"
+                )
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .pressSquish(interactionSource, pressedScale = 0.95f)
+                        .selectable(
+                            selected = isSelected,
+                            enabled = controlsEnabled,
+                            role = Role.RadioButton,
+                            interactionSource = interactionSource,
+                            indication = null
+                        ) { onMaxDimensionChange(option) },
+                    shape = MaterialTheme.shapes.small,
+                    color = cardColor,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
+                ) {
+                    Text(
+                        text = if (option == FULL_SIZE) "Full" else "$option",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = textColor,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+            }
+        }
+        Text(
+            text = if (maxDimension == FULL_SIZE) {
+                "Photos keep their original dimensions."
+            } else {
+                "Longest side up to $maxDimension px. Smaller photos are left at their size."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }

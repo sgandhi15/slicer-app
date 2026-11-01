@@ -15,6 +15,10 @@ internal const val PREFS_FILE_NAME = "slicer_preferences"
 internal const val PREFS_QUALITY_KEY = "last_quality"
 internal const val PREFS_OUTPUT_FOLDER_URI_KEY = "output_folder_uri"
 internal const val PREFS_WELCOME_SCREEN_SEEN_KEY = "welcome_screen_seen"
+internal const val PREFS_MAX_DIMENSION_KEY = "max_dimension"
+
+internal const val FULL_SIZE = 0
+internal val MAX_DIMENSION_OPTIONS = listOf(FULL_SIZE, 3000, 2048, 1280)
 
 internal val DEFAULT_OUTPUT_FOLDER_URI: Uri = "content://com.example.slicer.default/output/pictures_slicer".toUri()
 internal val DEFAULT_OUTPUT_RELATIVE_PATH = "${Environment.DIRECTORY_PICTURES}/Slicer/"

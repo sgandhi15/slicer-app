@@ -1,5 +1,6 @@
 package com.example.slicer.batch
 
+import com.example.slicer.core.FULL_SIZE
 import androidx.room.Entity
 import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
@@ -49,6 +50,7 @@ internal data class BatchEntity(
     val createdAt: Long,
     val completedAt: Long? = null,
     val quality: Int,
+    @ColumnInfo(defaultValue = "0") val maxDimension: Int = FULL_SIZE,
     val destinationUri: String,
     val state: BatchState = BatchState.Queued,
     val cancellationRequested: Boolean = false,

@@ -1,5 +1,6 @@
 package com.example.slicer.home
 
+import com.example.slicer.core.FULL_SIZE
 import android.app.Application
 import android.net.Uri
 import android.os.Trace
@@ -237,7 +238,7 @@ internal class HomeViewModel internal constructor(
         saveSelectedImages(emptyList())
     }
 
-    fun startBatch(sourceUris: List<Uri>, destinationUri: Uri, quality: Int) {
+    fun startBatch(sourceUris: List<Uri>, destinationUri: Uri, quality: Int, maxDimension: Int = FULL_SIZE) {
         if (isStarting.value) return
         isStarting.value = true
         startError.value = null
@@ -248,7 +249,8 @@ internal class HomeViewModel internal constructor(
                     sourceUris = sourceUris,
                     destinationUri = destinationUri,
                     quality = quality,
-                    cancellationRequested = { startingCancellationRequested }
+                    cancellationRequested = { startingCancellationRequested },
+                    maxDimension = maxDimension
                 )
                 if (startingCancellationRequested) {
                     repository.requestCancellation(batchId)

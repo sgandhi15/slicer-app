@@ -112,6 +112,13 @@ internal abstract class BatchDao {
         state: BatchItemState = BatchItemState.Queued
     ): BatchItemEntity?
 
+    @Query("SELECT * FROM batch_items WHERE batchId = :batchId AND state = :state ORDER BY position LIMIT :limit")
+    abstract suspend fun getQueuedItems(
+        batchId: String,
+        limit: Int,
+        state: BatchItemState = BatchItemState.Queued
+    ): List<BatchItemEntity>
+
     @Query(
         """
         SELECT * FROM batch_items

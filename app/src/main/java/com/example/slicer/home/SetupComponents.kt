@@ -1,7 +1,7 @@
 package com.example.slicer.home
 
 import com.example.slicer.storage.isDefaultOutputFolder
-import com.example.slicer.storage.loadBitmapForPreview
+import com.example.slicer.storage.loadTileThumbnail
 import com.example.slicer.storage.readableName
 
 import android.graphics.Bitmap
@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import com.example.slicer.ui.theme.SlicerOutlinedButton
 import com.example.slicer.ui.theme.pressSquish
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -80,6 +81,7 @@ internal fun BatchSetupContent(
     validationTotal: Int,
     controlsEnabled: Boolean,
     onSelectImages: () -> Unit,
+    onSelectFolder: () -> Unit,
     onRemoveImage: (Uri) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -91,7 +93,7 @@ internal fun BatchSetupContent(
         label = "setup-content"
     ) { isEmpty ->
         if (isEmpty) {
-            EmptySetupContent(isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages)
+            EmptySetupContent(isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages, onSelectFolder)
         } else {
             SelectedImagesGrid(selectedImages, isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages, onRemoveImage)
         }
@@ -104,7 +106,8 @@ private fun EmptySetupContent(
     validatedCount: Int,
     validationTotal: Int,
     controlsEnabled: Boolean,
-    onSelectImages: () -> Unit
+    onSelectImages: () -> Unit,
+    onSelectFolder: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -127,11 +130,20 @@ private fun EmptySetupContent(
                 style = MaterialTheme.typography.bodyLarge
             )
         }
-        EmptyImagePicker(
-            enabled = controlsEnabled,
-            onClick = onSelectImages,
-            modifier = Modifier.aspectRatio(1.4f)
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            EmptyImagePicker(
+                enabled = controlsEnabled,
+                onClick = onSelectImages,
+                modifier = Modifier.aspectRatio(1.4f)
+            )
+            SlicerOutlinedButton(
+                onClick = onSelectFolder,
+                enabled = controlsEnabled,
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Text("Choose a folder")
+            }
+        }
 
         if (isValidating) {
             SelectionValidationPanel(validatedCount, validationTotal)
@@ -308,7 +320,7 @@ private fun SelectedImageTile(
     LaunchedEffect(uri) {
         if (bitmap != null) return@LaunchedEffect
         val loaded = withContext(Dispatchers.IO) {
-            context.loadBitmapForPreview(uri, maxDimension = 512)
+            context.loadTileThumbnail(uri)
         }
         if (loaded != null) {
             ThumbnailCache.put(key, loaded)
@@ -361,7 +373,7 @@ private fun SelectedImageTile(
  */
 private object ThumbnailCache {
     private val cache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) {
-        override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
+        override fun sizeOf(key: String, value: Bitmap) = value.width * value.height * 4
     }
 
     fun get(key: String): Bitmap? = cache.get(key)

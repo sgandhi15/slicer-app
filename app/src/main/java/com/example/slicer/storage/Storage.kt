@@ -6,7 +6,9 @@ import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
 import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
-import com.example.slicer.core.JPEG_MIME_TYPES
+import com.example.slicer.core.FULL_SIZE
+import com.example.slicer.core.MAX_DIMENSION_OPTIONS
+import com.example.slicer.core.PREFS_MAX_DIMENSION_KEY
 import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
 import com.example.slicer.core.PREFS_QUALITY_KEY
@@ -21,6 +23,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.util.Size
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
@@ -53,6 +56,37 @@ internal fun Context.saveQuality(value: Int) {
     val clamped = value.coerceIn(MIN_QUALITY, MAX_QUALITY)
     val prefs = getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE)
     prefs.edit { putInt(PREFS_QUALITY_KEY, clamped) }
+}
+
+internal fun Context.loadSavedMaxDimension(): Int {
+    val saved = getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).getInt(PREFS_MAX_DIMENSION_KEY, FULL_SIZE)
+    return saved.takeIf { it in MAX_DIMENSION_OPTIONS } ?: FULL_SIZE
+}
+
+internal fun Context.saveMaxDimension(value: Int) {
+    getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).edit { putInt(PREFS_MAX_DIMENSION_KEY, value) }
+}
+
+internal fun Context.listImagesInFolder(treeUri: Uri): List<Uri> {
+    val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+        treeUri,
+        DocumentsContract.getTreeDocumentId(treeUri)
+    )
+    val projection = arrayOf(
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        DocumentsContract.Document.COLUMN_MIME_TYPE,
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME
+    )
+    val images = mutableListOf<Pair<String, Uri>>()
+    contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+        while (cursor.moveToNext()) {
+            val mimeType = cursor.getString(1) ?: continue
+            if (!mimeType.startsWith("image/")) continue
+            val name = cursor.getString(2).orEmpty()
+            images += name to DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
+        }
+    }
+    return images.sortedBy { it.first.lowercase() }.map { it.second }
 }
 
 internal fun Context.loadSavedOutputFolderUri(): Uri {
@@ -211,6 +245,11 @@ internal fun Context.resolveContentSize(uri: Uri): Long {
         }
     }.getOrNull() ?: -1L
 }
+
+// Gallery photos already have cached thumbnails; asking for them avoids decoding the full photo.
+internal fun Context.loadTileThumbnail(uri: Uri, size: Int = 512): Bitmap? =
+    runCatching { contentResolver.loadThumbnail(uri, Size(size, size), null) }.getOrNull()
+        ?: loadBitmapForPreview(uri, maxDimension = size)
 
 internal fun Context.loadBitmapForPreview(uri: Uri, maxDimension: Int = 1400): Bitmap? {
     val bounds = BitmapFactory.Options().apply {

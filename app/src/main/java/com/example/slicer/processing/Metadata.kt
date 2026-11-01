@@ -26,7 +26,8 @@ internal suspend fun Context.preserveJpegMetadata(
     encodedFile: File,
     expectedDimensions: JpegDimensions,
     maximumOutputBytes: Long? = null,
-    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled,
+    outputDimensions: JpegDimensions = expectedDimensions
 ): Boolean = metrics.measure(ProcessingStage.Metadata) {
     withContext(Dispatchers.IO) {
         val replacement = File(encodedFile.parentFile, "${encodedFile.name}.metadata")
@@ -98,7 +99,7 @@ internal suspend fun Context.preserveJpegMetadata(
                 try {
                     inspectCompleteJpeg(
                         input = measured,
-                        expectedDimensions = expectedDimensions,
+                        expectedDimensions = outputDimensions,
                         checkpoint = coroutineContext::ensureActive
                     )
                 } finally {

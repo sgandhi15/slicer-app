@@ -57,12 +57,13 @@ internal object MozJpegNative {
         memoryBudgetBytes: Long,
         cancelled: BooleanSupplier = BooleanSupplier { false },
         inputOffset: Long = 0L,
-        inputLength: Long = -1L
+        inputLength: Long = -1L,
+        scaleNumerator: Int = 8
     ): NativeCompressionResult {
         if (!isAvailable) return NativeCompressionResult(NativeCompressionStatus.Unavailable)
         val result = transcodeJpegNative(
             inputFileDescriptor, outputFileDescriptor, dimensions.width, dimensions.height,
-            quality.coerceIn(1, 100), memoryBudgetBytes, cancelled, inputOffset, inputLength
+            quality.coerceIn(1, 100), memoryBudgetBytes, cancelled, inputOffset, inputLength, scaleNumerator
         )
         return NativeCompressionResult(
             status = NativeCompressionStatus.entries.getOrNull(result[0].toInt())
@@ -82,7 +83,8 @@ internal object MozJpegNative {
         memoryBudgetBytes: Long,
         cancelled: BooleanSupplier,
         inputOffset: Long,
-        inputLength: Long
+        inputLength: Long,
+        scaleNumerator: Int
     ): LongArray
 
     fun validateJpegFileDescriptor(

@@ -1,5 +1,6 @@
 package com.example.slicer.batch
 
+import com.example.slicer.core.FULL_SIZE
 import android.content.Context
 import android.content.ContentResolver
 import android.net.Uri
@@ -69,10 +70,11 @@ internal class BatchRepository(
         sourceUris: List<Uri>,
         destinationUri: Uri,
         quality: Int,
-        cancellationRequested: () -> Boolean = { false }
+        cancellationRequested: () -> Boolean = { false },
+        maxDimension: Int = FULL_SIZE
     ): String = withContext(Dispatchers.IO) {
         sourceLifecycleMutex.withLock {
-            createAndEnqueueBatchLocked(sourceUris, destinationUri, quality, cancellationRequested)
+            createAndEnqueueBatchLocked(sourceUris, destinationUri, quality, cancellationRequested, maxDimension)
         }
     }
 
@@ -80,7 +82,8 @@ internal class BatchRepository(
         sourceUris: List<Uri>,
         destinationUri: Uri,
         quality: Int,
-        cancellationRequested: () -> Boolean
+        cancellationRequested: () -> Boolean,
+        maxDimension: Int
     ): String {
         require(sourceUris.isNotEmpty()) { "Select at least one image." }
 
@@ -91,7 +94,7 @@ internal class BatchRepository(
         }
         val readablePersistedUris = sourceUriPermissions.persistedReadUris().toMutableSet()
         val requiredNewGrants = distinctSourceUris.count { uri ->
-            uri.requiresPersistedReadPermission() && uri !in readablePersistedUris
+            uri.requiresPersistedReadPermission() && !uri.hasReadAccessIn(readablePersistedUris)
         }
         check(sourceUriPermissions.persistedPermissionCount() + requiredNewGrants <= PERSISTED_URI_GRANT_BUDGET) {
             "Not enough durable file-access slots are available. Finish existing work or select fewer images."
@@ -110,6 +113,7 @@ internal class BatchRepository(
             id = batchId,
             createdAt = System.currentTimeMillis(),
             quality = quality,
+            maxDimension = maxDimension,
             destinationUri = destinationUri.toString(),
             totalCount = items.size
         )
@@ -333,7 +337,9 @@ internal class BatchRepository(
 
     private fun hasDurableReadPermission(uri: Uri, readablePersistedUris: MutableSet<Uri>): Boolean {
         if (!uri.requiresPersistedReadPermission()) return true
-        if (uri in readablePersistedUris) return true
+        if (uri.hasReadAccessIn(readablePersistedUris)) return true
+        // Android can't grant files inside a picked folder one by one; only the folder's grant works.
+        if (DocumentsContract.isTreeUri(uri)) return false
 
         val granted = sourceUriPermissions.persistReadPermission(uri)
         if (granted) readablePersistedUris.add(uri)
@@ -347,7 +353,7 @@ internal class BatchRepository(
         val missingItems = dao.getItemsRequiringSourcePermission()
             .filter { item ->
                 val sourceUri = item.sourceUri.toUri()
-                sourceUri.requiresPersistedReadPermission() && sourceUri !in persistedUris
+                sourceUri.requiresPersistedReadPermission() && !sourceUri.hasReadAccessIn(persistedUris)
             }
         missingItems.forEach { item ->
             if (item.id in blockedProcessingItemIds) return@forEach
@@ -427,6 +433,13 @@ internal class BatchRepository(
         const val RESULT_MAX_LOADED_ITEMS = 150
     }
 
+}
+
+private fun Uri.hasReadAccessIn(persistedUris: Set<Uri>): Boolean {
+    if (this in persistedUris) return true
+    if (!DocumentsContract.isTreeUri(this)) return false
+    val folder = DocumentsContract.buildTreeDocumentUri(authority, DocumentsContract.getTreeDocumentId(this))
+    return folder in persistedUris
 }
 
 private fun Uri.requiresPersistedReadPermission(): Boolean {

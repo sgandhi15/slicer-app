@@ -32,6 +32,13 @@ add_library(
     codec_allocations.cpp
 )
 
+# NEON needs no extra tools; x86 SIMD would need nasm, so emulator builds stay without it.
+if(ANDROID_ABI MATCHES "^arm")
+    set(MOZJPEG_SIMD ON)
+else()
+    set(MOZJPEG_SIMD OFF)
+endif()
+
 ExternalProject_Add(
     mozjpeg_project
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/_deps/mozjpeg"
@@ -60,7 +67,7 @@ ExternalProject_Add(
         -DENABLE_STATIC=ON
         -DWITH_TURBOJPEG=OFF
         -DWITH_JAVA=OFF
-        -DWITH_SIMD=OFF
+        -DWITH_SIMD=${MOZJPEG_SIMD}
         -DPNG_SUPPORTED=OFF
         -DBUILD_TESTING=OFF
     # Build only the codec. Its allocator entry points are supplied by our JNI

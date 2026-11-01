@@ -4,13 +4,17 @@ import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME
 import com.example.slicer.core.DEFAULT_OUTPUT_FOLDER_URI
 import com.example.slicer.core.DEFAULT_QUALITY
+import com.example.slicer.core.FULL_SIZE
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.SlicerScreen
 import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.clearOutputFolderUri
 import com.example.slicer.storage.loadBitmapForPreview
 import com.example.slicer.storage.loadSavedOutputFolderUri
+import com.example.slicer.storage.listImagesInFolder
+import com.example.slicer.storage.loadSavedMaxDimension
 import com.example.slicer.storage.loadSavedQuality
+import com.example.slicer.storage.saveMaxDimension
 import com.example.slicer.storage.markWelcomeScreenSeen
 import com.example.slicer.storage.outputFolderAccess
 import com.example.slicer.storage.saveOutputFolderUri
@@ -63,6 +67,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -84,6 +89,8 @@ import com.example.slicer.ui.theme.slicerPageBackground
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -125,8 +132,17 @@ fun SlicerHomeScreen(
     var isCompareLoading by remember { mutableStateOf(false) }
     var compareError by remember { mutableStateOf<String?>(null) }
     var selectedResultForComparison by remember { mutableStateOf<BatchFileResult?>(null) }
+    var notificationTitle by remember { mutableStateOf("") }
     var notificationMessage by remember { mutableStateOf<String?>(null) }
     var isNotificationVisible by remember { mutableStateOf(false) }
+    var maxDimension by rememberSaveable { mutableIntStateOf(FULL_SIZE) }
+    val scope = rememberCoroutineScope()
+
+    fun notify(title: String, message: String) {
+        notificationTitle = title
+        notificationMessage = message
+        isNotificationVisible = true
+    }
 
     val isProcessing = durableState.isProcessing || durableState.isStarting
     val currentProgress = durableState.progress
@@ -196,6 +212,7 @@ fun SlicerHomeScreen(
 
     LaunchedEffect(Unit) {
         quality = context.loadSavedQuality()
+        maxDimension = context.loadSavedMaxDimension()
         val restoredOutputFolder = context.loadSavedOutputFolderUri()
         outputFolder = restoredOutputFolder
         status = null
@@ -230,6 +247,10 @@ fun SlicerHomeScreen(
         }
     }
 
+    LaunchedEffect(maxDimension, didLoadPreferences) {
+        if (didLoadPreferences) context.saveMaxDimension(maxDimension)
+    }
+
     LaunchedEffect(quality, didLoadPreferences) {
         if (didLoadPreferences) {
             // Restarts on every slider step, so dragging saves once when it settles.
@@ -251,6 +272,36 @@ fun SlicerHomeScreen(
         homeViewModel.dismissCurrentBatch()
         selectedResultForComparison = null
         currentScreen = SlicerScreen.Setup
+    }
+
+    val sourceFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri == null) return@rememberLauncherForActivityResult
+        val granted = runCatching {
+            context.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }.isSuccess
+        if (!granted) {
+            notify("Folder not added", "Slicer couldn't keep access to that folder. Try another one.")
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val images = withContext(Dispatchers.IO) {
+                runCatching { context.listImagesInFolder(treeUri) }.getOrDefault(emptyList())
+            }
+            if (images.isEmpty()) {
+                notify("No images found", "That folder has no images directly inside it.")
+                return@launch
+            }
+            if (images.size > MAX_SELECTED_IMAGES) {
+                notify("Folder added", "Only the first $MAX_SELECTED_IMAGES of ${images.size} images were added.")
+            }
+            status = null
+            homeViewModel.validateImageSelection(images)
+            homeViewModel.dismissCurrentBatch()
+            selectedResultForComparison = null
+            currentScreen = SlicerScreen.Setup
+        }
     }
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -302,9 +353,10 @@ fun SlicerHomeScreen(
     val canStart = selectedImages.isNotEmpty() && !selectionState.isValidating && !isProcessing
 
     fun startPersistedBatch(files: List<Uri>, folder: Uri, qualityValue: Int) {
+        val sizeLimit = maxDimension
         status = "Preparing batch..."
         currentScreen = SlicerScreen.Processing
-        homeViewModel.startBatch(files, folder, qualityValue)
+        homeViewModel.startBatch(files, folder, qualityValue, sizeLimit)
     }
 
     fun startProcessing() {
@@ -387,6 +439,7 @@ fun SlicerHomeScreen(
                                 validationTotal = selectionState.totalCount,
                                 controlsEnabled = !isProcessing,
                                 onSelectImages = { imagePicker.launch(arrayOf("image/*")) },
+                                onSelectFolder = { sourceFolderPicker.launch(null) },
                                 onRemoveImage = { uri ->
                                     homeViewModel.removeSelectedImage(uri)
                                     selectedResultForComparison = null
@@ -458,6 +511,12 @@ fun SlicerHomeScreen(
                                     onQualityChange = { quality = it }
                                 )
 
+                                ImageSizeSection(
+                                    maxDimension = maxDimension,
+                                    controlsEnabled = !isProcessing,
+                                    onMaxDimensionChange = { maxDimension = it }
+                                )
+
                                 DestinationSection(
                                     outputFolder = outputFolder,
                                     controlsEnabled = !isProcessing,
@@ -466,9 +525,7 @@ fun SlicerHomeScreen(
                                         outputFolder = DEFAULT_OUTPUT_FOLDER_URI
                                         context.clearOutputFolderUri()
                                         status = null
-                                        notificationMessage =
-                                            "Reset to $DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME."
-                                        isNotificationVisible = true
+                                        notify("Destination updated", "Reset to $DEFAULT_OUTPUT_FOLDER_DISPLAY_NAME.")
                                     }
                                 )
 
@@ -702,7 +759,7 @@ fun SlicerHomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 Text(
-                                    text = "Destination updated",
+                                    text = notificationTitle,
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )

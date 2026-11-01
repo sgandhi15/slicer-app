@@ -28,7 +28,7 @@ bool positionInput(int descriptor, jlong offset) {
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_example_slicer_processing_MozJpegNative_transcodeJpegNative(
     JNIEnv* env, jclass, jint inputFd, jint outputFd, jint width, jint height,
-    jint quality, jlong budget, jobject probe, jlong inputOffset, jlong inputLength
+    jint quality, jlong budget, jobject probe, jlong inputOffset, jlong inputLength, jint scaleNumerator
 ) {
     if (!probe) return nullptr;
     jclass probeClass = env->GetObjectClass(probe);
@@ -56,7 +56,7 @@ Java_com_example_slicer_processing_MozJpegNative_transcodeJpegNative(
         ftruncate(ownedOutput, 0) == 0 && lseek(ownedOutput, 0, SEEK_SET) >= 0) {
         result = slicer::transcodeJpeg(input, output, width, height, quality,
                                      budget > 0 ? static_cast<uint64_t>(budget) : 0,
-                                     cancelled, &cancellation, inputLength);
+                                     cancelled, &cancellation, inputLength, scaleNumerator);
     }
     const bool inputClosed = !input || fclose(input) == 0;
     const bool outputClosed = !output || fclose(output) == 0;

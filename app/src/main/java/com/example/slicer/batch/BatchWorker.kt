@@ -20,6 +20,7 @@ import com.example.slicer.SlicerApplication
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.RetryableCleanupException
+import com.example.slicer.processing.parallelEncoderCount
 import com.example.slicer.processing.processBatchItem
 import com.example.slicer.processing.JpegStatePersistenceException
 import com.example.slicer.storage.createOutputTempFile
@@ -126,6 +127,9 @@ internal class BatchWorker(
         }
         dao.markBatchRunning(batchId)
 
+        val ahead = applicationContext.parallelEncoderCount().takeIf { it > 1 }
+            ?.let { EncodeAhead(applicationContext, it) }
+        try {
         while (true) {
             batch = dao.getBatch(batchId) ?: return
             if (batch.cancellationRequested) {
@@ -141,12 +145,14 @@ internal class BatchWorker(
             val inputName = checkNotNull(item.inputName) { "Queued item is missing its input name." }
             val outputName = checkNotNull(item.outputName) { "Queued item is missing its output name." }
             setForeground(createForegroundInfo(batch, inputName))
+            ahead?.schedule(prepareUpcomingItems(batch, ahead.encoders), batch, current = item)
             val metrics = ProcessingMetricsRecorder.create(batchId, item.id, item.attemptCount)
             var metricsOutcome = "Failed"
 
             try {
                 val tempFile = applicationContext.createOutputTempFile(item.id)
-                val prepared = processBatchItem(
+                val encodedAhead = ahead?.take(item, tempFile)?.takeIf { recordDimensionsFrom(item, it) }
+                val prepared = encodedAhead?.output ?: processBatchItem(
                     context = applicationContext,
                     inputUri = item.sourceUri.toUri(),
                     tempFile = tempFile,
@@ -170,7 +176,9 @@ internal class BatchWorker(
                         }
                     },
                     metrics = metrics,
-                    passThrough = !isJpegFileName(outputName)
+                    passThrough = !isJpegFileName(outputName),
+                    maxDimension = batch.maxDimension,
+                    budgetShares = ahead?.budgetShares ?: 1
                 )
                 val published = metrics.measure(ProcessingStage.Publication) {
                     applicationContext.publishPreparedOutput(
@@ -236,6 +244,9 @@ internal class BatchWorker(
 
             val updated = dao.getBatch(batchId) ?: return
             setForeground(createForegroundInfo(updated, null))
+        }
+        } finally {
+            ahead?.close()
         }
 
         dao.finishBatch(batchId)
@@ -351,6 +362,14 @@ internal class BatchWorker(
                 "Preparing image ${item.position + 1} of ${batch.totalCount}"
             )
         )
+        val prepared = prepareMetadata(batch, item) != null
+        if (!prepared && dao.getBatch(batch.id)?.cancellationRequested != true) {
+            error("Could not persist image metadata.")
+        }
+        return prepared
+    }
+
+    private suspend fun prepareMetadata(batch: BatchEntity, item: BatchItemEntity): BatchItemEntity? {
         val sourceUri = item.sourceUri.toUri()
         val inputName = applicationContext.resolveDisplayName(sourceUri)
         val outputName = collisionResistantOutputName(
@@ -358,17 +377,26 @@ internal class BatchWorker(
             batchId = batch.id,
             position = item.position
         )
-        val prepared = dao.prepareItem(
-                itemId = item.id,
-                batchId = batch.id,
-                inputName = inputName,
-                outputName = outputName,
-                inputBytes = applicationContext.resolveContentSize(sourceUri)
-            )
-        if (!prepared && dao.getBatch(batch.id)?.cancellationRequested != true) {
-            error("Could not persist image metadata.")
+        val inputBytes = applicationContext.resolveContentSize(sourceUri)
+        val saved = dao.prepareItem(item.id, batch.id, inputName, outputName, inputBytes)
+        return if (saved) item.copy(inputName = inputName, outputName = outputName, inputBytes = inputBytes) else null
+    }
+
+    // Look-ahead is only an accelerator: if preparing upcoming photos fails, the loop handles them inline later.
+    private suspend fun prepareUpcomingItems(batch: BatchEntity, count: Int): List<BatchItemEntity> = try {
+        dao.getQueuedItems(batch.id, count).mapNotNull { item ->
+            if (item.inputName != null && item.outputName != null) item else prepareMetadata(batch, item)
         }
-        return prepared
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private suspend fun recordDimensionsFrom(item: BatchItemEntity, encoded: EncodedAhead): Boolean {
+        val dimensions = encoded.sourceDimensions ?: return true
+        if (item.width > 0 && item.height > 0) return true
+        return dao.recordDimensions(item.id, dimensions.width, dimensions.height) == 1
     }
 
     private fun collisionResistantOutputName(inputName: String, batchId: String, position: Int): String {

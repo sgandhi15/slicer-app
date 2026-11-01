@@ -1,5 +1,6 @@
 package com.example.slicer.processing
 
+import com.example.slicer.core.FULL_SIZE
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
 import com.example.slicer.core.ProcessingDecision
@@ -40,7 +41,9 @@ internal suspend fun processBatchItem(
     knownDimensions: JpegDimensions? = null,
     onDimensionsRead: suspend (JpegDimensions) -> Unit = {},
     metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled,
-    passThrough: Boolean = false
+    passThrough: Boolean = false,
+    maxDimension: Int = FULL_SIZE,
+    budgetShares: Int = 1
 ): PreparedBatchOutput = withContext(Dispatchers.IO) {
     if (passThrough) {
         return@withContext copyUnchanged(context, inputUri, tempFile, inputBytes, metrics)
@@ -53,7 +56,9 @@ internal suspend fun processBatchItem(
         inputBytes = inputBytes,
         knownDimensions = knownDimensions,
         onDimensionsRead = onDimensionsRead,
-        metrics = metrics
+        metrics = metrics,
+        maxDimension = maxDimension,
+        budgetShares = budgetShares
     )
     val actualBytes = tempFile.length()
     if (!tempFile.isFile || actualBytes <= 0L || actualBytes != result.outputBytes) {
@@ -142,7 +147,9 @@ private suspend fun processSingleImage(
     inputBytes: Long,
     knownDimensions: JpegDimensions?,
     onDimensionsRead: suspend (JpegDimensions) -> Unit,
-    metrics: ProcessingMetricsRecorder
+    metrics: ProcessingMetricsRecorder,
+    maxDimension: Int,
+    budgetShares: Int
 ): PreparedBatchOutput {
     val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
 
@@ -153,7 +160,9 @@ private suspend fun processSingleImage(
             quality = q,
             knownDimensions = knownDimensions,
             onDimensionsRead = onDimensionsRead,
-            metrics = metrics
+            metrics = metrics,
+            maxDimension = maxDimension,
+            budgetShares = budgetShares
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -183,6 +192,7 @@ private suspend fun processSingleImage(
     val dimensions = checkNotNull(compressionResult.dimensions) {
         "Successful compression did not report JPEG dimensions."
     }
+    val outputDimensions = compressionResult.outputDimensions ?: dimensions
     val compressedBytes = outputFile.length()
     if (compressedBytes <= 0L) {
         return fallbackToOriginalOrFail(
@@ -213,7 +223,8 @@ private suspend fun processSingleImage(
         encodedFile = outputFile,
         expectedDimensions = dimensions,
         maximumOutputBytes = inputBytes.takeIf { it > 0L },
-        metrics = metrics
+        metrics = metrics,
+        outputDimensions = outputDimensions
     )
     if (!metadataCopied) {
         return fallbackToOriginalOrFail(
@@ -227,7 +238,7 @@ private suspend fun processSingleImage(
         )
     }
 
-    context.addMissingDateTaken(inputUri, outputFile, dimensions)
+    context.updateOutputExif(inputUri, outputFile, outputDimensions, resized = outputDimensions != dimensions)
 
     val finalBytes = outputFile.length()
     if (inputBytes > 0L && finalBytes >= inputBytes) {
@@ -258,7 +269,7 @@ private suspend fun processSingleImage(
         decision = ProcessingDecision.Compressed,
         outputBytes = finalBytes,
         message = null,
-        expectedDimensions = dimensions
+        expectedDimensions = outputDimensions
     )
 }
 
@@ -308,7 +319,7 @@ private suspend fun fallbackToOriginalOrFail(
         throw SourceChangedException("Source changed while it was being copied.")
     }
     // Only the date is added; the image data itself stays exactly as it was.
-    context.addMissingDateTaken(inputUri, outputFile, expectedDimensions, allowTrailingBytes = true)
+    context.updateOutputExif(inputUri, outputFile, expectedDimensions, resized = false, allowTrailingBytes = true)
 
     return PreparedBatchOutput(
         decision = ProcessingDecision.CopiedOriginal,

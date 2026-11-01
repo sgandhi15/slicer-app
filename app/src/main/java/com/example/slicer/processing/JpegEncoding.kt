@@ -1,5 +1,6 @@
 package com.example.slicer.processing
 
+import com.example.slicer.core.FULL_SIZE
 import com.example.slicer.telemetry.MeasuredInputStream
 import com.example.slicer.telemetry.ProcessingMetricsRecorder
 import com.example.slicer.telemetry.ProcessingStage
@@ -12,8 +13,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -22,7 +23,21 @@ import java.util.function.BooleanSupplier
 internal data class JpegCompressionResult(
     val succeeded: Boolean,
     val message: String? = null,
-    val dimensions: JpegDimensions? = null
+    val dimensions: JpegDimensions? = null,
+    val outputDimensions: JpegDimensions? = dimensions
+)
+
+// libjpeg can only shrink by n/8 while decoding; 8 means full size.
+internal fun resizeScaleNumerator(dimensions: JpegDimensions, maxDimension: Int): Int {
+    val longest = maxOf(dimensions.width, dimensions.height)
+    if (maxDimension == FULL_SIZE || longest <= maxDimension) return 8
+    return (8L * maxDimension / longest).toInt().coerceIn(1, 7)
+}
+
+// Same rounding libjpeg uses for its output size.
+internal fun JpegDimensions.scaledBy(numerator: Int) = JpegDimensions(
+    width = (width * numerator + 7) / 8,
+    height = (height * numerator + 7) / 8
 )
 
 internal class JpegStatePersistenceException(message: String, cause: Throwable? = null) :
@@ -38,9 +53,11 @@ internal suspend fun Context.compressJpegImage(
     quality: Int,
     knownDimensions: JpegDimensions? = null,
     onDimensionsRead: suspend (JpegDimensions) -> Unit = {},
-    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled
+    metrics: ProcessingMetricsRecorder = ProcessingMetricsRecorder.Disabled,
+    maxDimension: Int = FULL_SIZE,
+    budgetShares: Int = 1
 ): JpegCompressionResult = withContext(Dispatchers.IO) {
-    encodingMutex.withLock {
+    encoderPermits.withPermit {
         runCatching {
             val coroutineContext = currentCoroutineContext()
             var headerBytesRead = 0L
@@ -81,8 +98,16 @@ internal suspend fun Context.compressJpegImage(
             }
             if (knownDimensions == null) onDimensionsRead(dimensions)
 
+            val scaleNumerator = resizeScaleNumerator(dimensions, maxDimension)
+            if (scaleNumerator == 8 && isAlreadyCompressedBelow(inputUri, quality)) {
+                return@runCatching JpegCompressionResult(
+                    succeeded = false,
+                    message = "Already compressed more than this quality would.",
+                    dimensions = dimensions
+                )
+            }
             val budget = metrics.measure(ProcessingStage.MemoryAdmission) {
-                nativeEncodingBudget()
+                nativeEncodingBudget().let { it.copy(bytes = it.bytes / budgetShares.coerceAtLeast(1)) }
             }
             if (budget.rejection != null) {
                 metrics.recordMemoryDecision(0L, 0L, budget.rejection.name)
@@ -102,7 +127,8 @@ internal suspend fun Context.compressJpegImage(
                             memoryBudgetBytes = budget.bytes,
                             cancelled = BooleanSupplier { !coroutineContext.isActive },
                             inputOffset = input.startOffset,
-                            inputLength = input.declaredLength
+                            inputLength = input.declaredLength,
+                            scaleNumerator = scaleNumerator
                         )
                     }
                 } ?: NativeCompressionResult(NativeCompressionStatus.IoFailure)
@@ -124,7 +150,11 @@ internal suspend fun Context.compressJpegImage(
             }
             // Metadata rewriting and final structural validation happen after both native
             // codecs have been destroyed; no bitmap or codec buffers remain resident.
-            JpegCompressionResult(succeeded = true, dimensions = dimensions)
+            JpegCompressionResult(
+                succeeded = true,
+                dimensions = dimensions,
+                outputDimensions = dimensions.scaledBy(scaleNumerator)
+            )
         }.getOrElse { error ->
             if (error is CancellationException || error is JpegStatePersistenceException ||
                 error is JpegSourceSafetyException
@@ -141,7 +171,18 @@ internal suspend fun Context.compressJpegImage(
     }
 }
 
-private val encodingMutex = Mutex()
+// One spare permit for an inline retry while look-ahead encoders are busy.
+private val encoderPermits = Semaphore(MAX_PARALLEL_ENCODERS + 1)
+
+// Re-encoding a photo at a higher quality than it was saved at only makes it bigger.
+private fun Context.isAlreadyCompressedBelow(uri: Uri, quality: Int): Boolean {
+    val sourceQuality = runCatching {
+        contentResolver.openInputStream(uri)?.use(::estimateJpegQuality)
+    }.getOrNull() ?: return false
+    return sourceQuality <= quality - ALREADY_COMPRESSED_QUALITY_MARGIN
+}
+
+internal const val ALREADY_COMPRESSED_QUALITY_MARGIN = 10
 
 private fun NativeCompressionStatus.failureMessage(): String = when (this) {
     NativeCompressionStatus.ResourceLimit ->

@@ -42,3 +42,18 @@ internal fun Context.nativeEncodingBudget(): NativeEncodingBudget {
         )
     )
 }
+
+internal const val MAX_PARALLEL_ENCODERS = 4
+private const val PARALLEL_ENCODER_SHARE_BYTES = 400L * 1024 * 1024
+
+/**
+ * How many photos to compress at once: each gets at least a 400 MB share of the native budget (about
+ * 60 MP), with one share kept spare for an inline retry, and at most one encoder per two cores.
+ */
+internal fun Context.parallelEncoderCount(): Int {
+    val budget = nativeEncodingBudget()
+    if (budget.rejection != null) return 1
+    val byMemory = (budget.bytes / PARALLEL_ENCODER_SHARE_BYTES - 1).toInt()
+    val byCores = Runtime.getRuntime().availableProcessors() / 2
+    return minOf(byMemory, byCores, MAX_PARALLEL_ENCODERS).coerceAtLeast(1)
+}

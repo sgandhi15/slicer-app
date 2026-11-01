@@ -109,7 +109,7 @@ void configureMemory(j_common_ptr codec, State* state) {
     codec->progress = &state->progress;
 }
 
-void run(State* state, int width, int height, int quality) {
+void run(State* state, int width, int height, int quality, int scaleNumerator) {
     auto* decoder = &state->decoder;
     auto* encoder = &state->encoder;
     checkpoint(state);
@@ -139,11 +139,14 @@ void run(State* state, int width, int height, int quality) {
     }
     decoder->out_color_space = JCS_RGB;
     decoder->dct_method = JDCT_ISLOW;
+    decoder->scale_num = static_cast<unsigned int>(scaleNumerator);
+    decoder->scale_denom = 8;
+    jpeg_calc_output_dimensions(decoder);
     jpeg_create_compress(encoder);
     configureMemory(reinterpret_cast<j_common_ptr>(encoder), state);
     jpeg_stdio_dest(encoder, state->output);
-    encoder->image_width = decoder->image_width;
-    encoder->image_height = decoder->image_height;
+    encoder->image_width = decoder->output_width;
+    encoder->image_height = decoder->output_height;
     encoder->input_components = 3;
     encoder->in_color_space = JCS_RGB;
     jpeg_c_set_int_param(encoder, JINT_COMPRESS_PROFILE, JCP_MAX_COMPRESSION);
@@ -155,7 +158,8 @@ void run(State* state, int width, int height, int quality) {
     encoder->comp_info[0].v_samp_factor = 2;
     encoder->comp_info[1].h_samp_factor = encoder->comp_info[1].v_samp_factor = 1;
     encoder->comp_info[2].h_samp_factor = encoder->comp_info[2].v_samp_factor = 1;
-    jpeg_c_set_bool_param(encoder, JBOOLEAN_OPTIMIZE_SCANS, TRUE);
+    // Searching scan layouts roughly doubles encode time for under 1% smaller files.
+    jpeg_c_set_bool_param(encoder, JBOOLEAN_OPTIMIZE_SCANS, FALSE);
     jpeg_c_set_bool_param(encoder, JBOOLEAN_TRELLIS_QUANT, TRUE);
     jpeg_c_set_bool_param(encoder, JBOOLEAN_TRELLIS_QUANT_DC, TRUE);
     jpeg_simple_progression(encoder);
@@ -179,10 +183,12 @@ void run(State* state, int width, int height, int quality) {
 
 TranscodeResult transcodeJpeg(FILE* input, FILE* output, int width, int height, int quality,
                               uint64_t budgetBytes, bool (*cancelled)(void*), void* token,
-                              int64_t inputLength) {
+                              int64_t inputLength, int scaleNumerator) {
     if (!input || !output) return {TranscodeStatus::IoFailure, 0};
     if (width <= 0 || height <= 0 || width > JPEG_MAX_DIMENSION || height > JPEG_MAX_DIMENSION ||
-        quality < 1 || quality > 100) return {TranscodeStatus::Unsupported, 0};
+        quality < 1 || quality > 100 || scaleNumerator < 1 || scaleNumerator > 8) {
+        return {TranscodeStatus::Unsupported, 0};
+    }
     // Heap storage remains defined after longjmp; no C++ destructors are skipped.
     auto* state = static_cast<State*>(calloc(1, sizeof(State)));
     if (!state) return {TranscodeStatus::ResourceLimit, 0};
@@ -199,7 +205,7 @@ TranscodeResult transcodeJpeg(FILE* input, FILE* output, int width, int height, 
     state->error.error_exit = errorExit;
     state->error.emit_message = emitMessage;
     state->progress.progress_monitor = progress;
-    if (setjmp(state->jump) == 0) run(state, width, height, quality);
+    if (setjmp(state->jump) == 0) run(state, width, height, quality, scaleNumerator);
     if (state->decoder.mem) jpeg_destroy_decompress(&state->decoder);
     if (state->encoder.mem) jpeg_destroy_compress(&state->encoder);
     const TranscodeResult result{state->status,
