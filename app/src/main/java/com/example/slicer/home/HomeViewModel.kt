@@ -1,6 +1,8 @@
 package com.example.slicer.home
 
 import com.example.slicer.core.FULL_SIZE
+import com.example.slicer.core.ORIGINAL_RESOLUTION
+import com.example.slicer.core.VideoQuality
 import android.app.Application
 import android.net.Uri
 import android.os.Trace
@@ -16,6 +18,8 @@ import com.example.slicer.batch.BatchEntity
 import com.example.slicer.batch.BatchItemEntity
 import com.example.slicer.batch.BatchItemState
 import com.example.slicer.batch.BatchState
+import com.example.slicer.batch.VideoItemProgress
+import com.example.slicer.batch.VideoProgress
 import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
@@ -50,6 +54,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal data class ImageSelectionUiState(
     val selectedImages: List<Uri> = emptyList(),
+    val selectedVideos: Set<Uri> = emptySet(),
     val isValidating: Boolean = false,
     val validatedCount: Int = 0,
     val totalCount: Int = 0,
@@ -57,7 +62,10 @@ internal data class ImageSelectionUiState(
     val inaccessibleUris: List<Uri> = emptyList(),
     val ignoredCount: Int = 0,
     internal val requestId: Long = 0L
-)
+) {
+    val hasVideos: Boolean get() = selectedVideos.isNotEmpty()
+    val hasImages: Boolean get() = selectedImages.size > selectedVideos.size
+}
 
 internal data class DurableBatchUiState(
     val batchId: String? = null,
@@ -104,7 +112,7 @@ internal class HomeViewModel internal constructor(
     private val selectionRequestIds = AtomicLong(0L)
     private var selectionValidationJob: Job? = null
     private val _selectionState = MutableStateFlow(
-        ImageSelectionUiState(selectedImages = restoreSelectedImages())
+        ImageSelectionUiState(selectedImages = restoreSelectedImages(), selectedVideos = restoreSelectedVideos())
     )
     val selectionState: StateFlow<ImageSelectionUiState> = _selectionState.asStateFlow()
     @Volatile
@@ -122,11 +130,12 @@ internal class HomeViewModel internal constructor(
         persistedState,
         dismissedBatchId,
         isStarting,
-        startError
-    ) { persisted, dismissedId, starting, error ->
+        startError,
+        VideoProgress.current
+    ) { persisted, dismissedId, starting, error, videoProgress ->
         val batch = persisted?.first?.takeUnless { it.id == dismissedId }
         val currentItem = if (batch == null) null else persisted.second
-        batch.toUiState(currentItem, starting, error)
+        batch.toUiState(currentItem, videoProgress, starting, error)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -151,7 +160,7 @@ internal class HomeViewModel internal constructor(
 
         val requestId = selectionRequestIds.incrementAndGet()
         selectionValidationJob?.cancel()
-        saveSelectedImages(emptyList())
+        saveSelectedImages(emptyList(), emptySet())
         _selectionState.value = ImageSelectionUiState(
             isValidating = true,
             totalCount = minOf(uris.size, MAX_SELECTED_IMAGES),
@@ -199,7 +208,10 @@ internal class HomeViewModel internal constructor(
             }
 
             val selectedImages = outcomes.mapNotNull { (uri, outcome) ->
-                uri.takeIf { outcome == ImageSelectionOutcome.Supported }
+                uri.takeIf { outcome == ImageSelectionOutcome.Supported || outcome == ImageSelectionOutcome.SupportedVideo }
+            }
+            val selectedVideos = outcomes.mapNotNullTo(mutableSetOf()) { (uri, outcome) ->
+                uri.takeIf { outcome == ImageSelectionOutcome.SupportedVideo }
             }
             val unsupportedUris = outcomes.mapNotNull { (uri, outcome) ->
                 uri.takeIf { outcome == ImageSelectionOutcome.Unsupported }
@@ -213,6 +225,7 @@ internal class HomeViewModel internal constructor(
                 } else {
                     state.copy(
                         selectedImages = selectedImages,
+                        selectedVideos = selectedVideos,
                         isValidating = false,
                         validatedCount = acceptedUris.size,
                         unsupportedUris = unsupportedUris,
@@ -220,25 +233,32 @@ internal class HomeViewModel internal constructor(
                     )
                 }
             }
-            if (_selectionState.value.requestId == requestId) saveSelectedImages(selectedImages)
+            if (_selectionState.value.requestId == requestId) saveSelectedImages(selectedImages, selectedVideos)
         }
     }
 
     fun removeSelectedImage(uri: Uri) {
         _selectionState.update { state ->
-            state.copy(selectedImages = state.selectedImages - uri)
+            state.copy(selectedImages = state.selectedImages - uri, selectedVideos = state.selectedVideos - uri)
         }
-        saveSelectedImages(_selectionState.value.selectedImages)
+        saveSelectedImages(_selectionState.value.selectedImages, _selectionState.value.selectedVideos)
     }
 
     fun clearImageSelection() {
         val requestId = selectionRequestIds.incrementAndGet()
         selectionValidationJob?.cancel()
         _selectionState.value = ImageSelectionUiState(requestId = requestId)
-        saveSelectedImages(emptyList())
+        saveSelectedImages(emptyList(), emptySet())
     }
 
-    fun startBatch(sourceUris: List<Uri>, destinationUri: Uri, quality: Int, maxDimension: Int = FULL_SIZE) {
+    fun startBatch(
+        sourceUris: List<Uri>,
+        destinationUri: Uri,
+        quality: Int,
+        maxDimension: Int = FULL_SIZE,
+        videoQuality: VideoQuality = VideoQuality.Balanced,
+        videoShortSide: Int = ORIGINAL_RESOLUTION
+    ) {
         if (isStarting.value) return
         isStarting.value = true
         startError.value = null
@@ -250,7 +270,9 @@ internal class HomeViewModel internal constructor(
                     destinationUri = destinationUri,
                     quality = quality,
                     cancellationRequested = { startingCancellationRequested },
-                    maxDimension = maxDimension
+                    maxDimension = maxDimension,
+                    videoQuality = videoQuality,
+                    videoShortSide = videoShortSide
                 )
                 if (startingCancellationRequested) {
                     repository.requestCancellation(batchId)
@@ -307,18 +329,27 @@ internal class HomeViewModel internal constructor(
             .orEmpty()
     }
 
-    private fun saveSelectedImages(images: List<Uri>) {
+    private fun restoreSelectedVideos(): Set<Uri> {
+        return savedStateHandle.get<ArrayList<String>>(SELECTED_VIDEOS_KEY)
+            ?.mapTo(mutableSetOf(), Uri::parse)
+            .orEmpty()
+    }
+
+    private fun saveSelectedImages(images: List<Uri>, videos: Set<Uri>) {
         savedStateHandle[SELECTED_IMAGES_KEY] = ArrayList(images.map(Uri::toString))
+        savedStateHandle[SELECTED_VIDEOS_KEY] = ArrayList(videos.map(Uri::toString))
     }
 
     private companion object {
         const val MAX_SELECTION_VALIDATION_CONCURRENCY = 4
         const val SELECTED_IMAGES_KEY = "selected_images"
+        const val SELECTED_VIDEOS_KEY = "selected_videos"
     }
 }
 
 private fun BatchEntity?.toUiState(
     currentItem: BatchItemEntity?,
+    videoProgress: VideoItemProgress?,
     isStarting: Boolean,
     error: String?
 ): DurableBatchUiState = traceUiStateMapping {
@@ -326,10 +357,10 @@ private fun BatchEntity?.toUiState(
 
     val status = when (state) {
         BatchState.Queued -> "Preparing batch..."
-        BatchState.Running -> "Compressing images..."
+        BatchState.Running -> "Compressing..."
         BatchState.Retrying -> lastError ?: "Waiting to retry batch processing..."
         BatchState.NeedsDestination -> lastError ?: "Choose a new output folder to continue."
-        BatchState.Cancelling -> "Cancelling after the current image..."
+        BatchState.Cancelling -> "Cancelling..."
         BatchState.Completed -> "Done. $completedCount files written."
         BatchState.CompletedWithFailures ->
             "Done. Compressed: $compressedCount, kept original: $copiedCount, failed: $failedCount."
@@ -349,7 +380,8 @@ private fun BatchEntity?.toUiState(
             copiedCount = copiedCount,
             failedCount = failedCount,
             cancelledCount = cancelledCount,
-            currentFile = currentItem?.inputName
+            currentFile = currentItem?.inputName,
+            currentFilePercent = videoProgress?.takeIf { it.itemId == currentItem?.id }?.percent
         ),
         totalInputBytes = totalInputBytes,
         totalOutputBytes = totalOutputBytes,
@@ -377,7 +409,7 @@ private fun BatchItemEntity.toResult(): BatchFileResult = BatchFileResult(
     inputUri = sourceUri.toUri(),
     inputName = inputName
         ?: sourceUri.toUri().lastPathSegment?.substringAfterLast('/')?.ifBlank { null }
-        ?: "image.jpg",
+        ?: "file",
     outputUri = outputUri?.toUri(),
     decision = when (state) {
         BatchItemState.Compressed -> ProcessingDecision.Compressed

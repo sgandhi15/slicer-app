@@ -4,7 +4,10 @@ import com.example.slicer.core.FULL_SIZE
 import com.example.slicer.core.MAX_DIMENSION_OPTIONS
 import com.example.slicer.core.MAX_QUALITY
 import com.example.slicer.core.MIN_QUALITY
+import com.example.slicer.core.ORIGINAL_RESOLUTION
 import com.example.slicer.core.QUALITY_PRESETS
+import com.example.slicer.core.VIDEO_SHORT_SIDE_OPTIONS
+import com.example.slicer.core.VideoQuality
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -51,7 +54,8 @@ import kotlin.math.roundToInt
 internal fun QualityStepContent(
     quality: Int,
     controlsEnabled: Boolean,
-    onQualityChange: (Int) -> Unit
+    onQualityChange: (Int) -> Unit,
+    title: String = "Compression quality"
 ) {
     var showCustomQuality by rememberSaveable {
         mutableStateOf(QUALITY_PRESETS.none { it.quality == quality })
@@ -62,7 +66,7 @@ internal fun QualityStepContent(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "Compression quality",
+            text = title,
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurface
         )
@@ -203,47 +207,13 @@ internal fun ImageSizeSection(
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
-        Row(
-            modifier = Modifier.fillMaxWidth().selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            MAX_DIMENSION_OPTIONS.forEach { option ->
-                val isSelected = option == maxDimension
-                val interactionSource = remember { MutableInteractionSource() }
-                val cardColor by animateColorAsState(
-                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                    label = "size-color"
-                )
-                val textColor by animateColorAsState(
-                    if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    label = "size-text"
-                )
-                Surface(
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .pressSquish(interactionSource, pressedScale = 0.95f)
-                        .selectable(
-                            selected = isSelected,
-                            enabled = controlsEnabled,
-                            role = Role.RadioButton,
-                            interactionSource = interactionSource,
-                            indication = null
-                        ) { onMaxDimensionChange(option) },
-                    shape = MaterialTheme.shapes.small,
-                    color = cardColor,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
-                ) {
-                    Text(
-                        text = if (option == FULL_SIZE) "Full" else "$option",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = textColor,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
-                }
-            }
-        }
+        ChoiceRow(
+            options = MAX_DIMENSION_OPTIONS,
+            selected = maxDimension,
+            label = { option -> if (option == FULL_SIZE) "Full" else "$option" },
+            controlsEnabled = controlsEnabled,
+            onSelect = onMaxDimensionChange
+        )
         Text(
             text = if (maxDimension == FULL_SIZE) {
                 "Photos keep their original dimensions."
@@ -253,5 +223,110 @@ internal fun ImageSizeSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+internal fun VideoSettingsSection(
+    quality: VideoQuality,
+    shortSide: Int,
+    controlsEnabled: Boolean,
+    onQualityChange: (VideoQuality) -> Unit,
+    onShortSideChange: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "Video quality",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        ChoiceRow(
+            options = VideoQuality.entries,
+            selected = quality,
+            label = { it.label },
+            controlsEnabled = controlsEnabled,
+            onSelect = onQualityChange
+        )
+        Text(
+            text = quality.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Video resolution",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        ChoiceRow(
+            options = VIDEO_SHORT_SIDE_OPTIONS,
+            selected = shortSide,
+            label = { option -> if (option == ORIGINAL_RESOLUTION) "Original" else "${option}p" },
+            controlsEnabled = controlsEnabled,
+            onSelect = onShortSideChange
+        )
+        Text(
+            text = if (shortSide == ORIGINAL_RESOLUTION) {
+                "Videos keep their original resolution."
+            } else {
+                "Videos larger than ${shortSide}p are scaled down. Smaller videos keep their size."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun <T> ChoiceRow(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    controlsEnabled: Boolean,
+    onSelect: (T) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        options.forEach { option ->
+            val isSelected = option == selected
+            val interactionSource = remember { MutableInteractionSource() }
+            val cardColor by animateColorAsState(
+                if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                label = "choice-color"
+            )
+            val textColor by animateColorAsState(
+                if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                label = "choice-text"
+            )
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .pressSquish(interactionSource, pressedScale = 0.95f)
+                    .selectable(
+                        selected = isSelected,
+                        enabled = controlsEnabled,
+                        role = Role.RadioButton,
+                        interactionSource = interactionSource,
+                        indication = null
+                    ) { onSelect(option) },
+                shape = MaterialTheme.shapes.small,
+                color = cardColor,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
+            ) {
+                Text(
+                    text = label(option),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = textColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            }
+        }
     }
 }

@@ -76,6 +76,7 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun BatchSetupContent(
     selectedImages: List<Uri>,
+    selectedVideos: Set<Uri>,
     isValidating: Boolean,
     validatedCount: Int,
     validationTotal: Int,
@@ -95,7 +96,10 @@ internal fun BatchSetupContent(
         if (isEmpty) {
             EmptySetupContent(isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages, onSelectFolder)
         } else {
-            SelectedImagesGrid(selectedImages, isValidating, validatedCount, validationTotal, controlsEnabled, onSelectImages, onRemoveImage)
+            SelectedImagesGrid(
+                selectedImages, selectedVideos, isValidating, validatedCount, validationTotal, controlsEnabled,
+                onSelectImages, onRemoveImage
+            )
         }
     }
 }
@@ -118,7 +122,7 @@ private fun EmptySetupContent(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                "Choose images",
+                "Choose files",
                 style = MaterialTheme.typography.displayMedium.copy(
                     fontSize = 32.sp,
                     lineHeight = 38.sp,
@@ -126,7 +130,7 @@ private fun EmptySetupContent(
                 )
             )
             Text(
-                "Make your photos smaller.",
+                "Make your photos and videos smaller.",
                 style = MaterialTheme.typography.bodyLarge
             )
         }
@@ -159,6 +163,7 @@ private fun EmptySetupContent(
 @Composable
 private fun SelectedImagesGrid(
     selectedImages: List<Uri>,
+    selectedVideos: Set<Uri>,
     isValidating: Boolean,
     validatedCount: Int,
     validationTotal: Int,
@@ -192,6 +197,7 @@ private fun SelectedImagesGrid(
         ) { uri ->
             SelectedImageTile(
                 uri = uri,
+                isVideo = uri in selectedVideos,
                 enabled = controlsEnabled,
                 onRemove = { onRemoveImage(uri) },
                 // Neighbours slide into the gap when a tile is removed.
@@ -263,12 +269,12 @@ private fun EmptyImagePicker(
                 color = MaterialTheme.colorScheme.onPrimary
             )
             Text(
-                text = "Select images",
+                text = "Select photos & videos",
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onPrimary
             )
             Text(
-                text = "Up to $MAX_SELECTED_IMAGES images",
+                text = "Up to $MAX_SELECTED_IMAGES files",
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimary
@@ -289,7 +295,7 @@ private fun SelectedImagesHeader(
     ) {
         Column {
             Text(
-                text = "Selected images",
+                text = "Selected files",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -307,6 +313,7 @@ private fun SelectedImagesHeader(
 @Composable
 private fun SelectedImageTile(
     uri: Uri,
+    isVideo: Boolean,
     enabled: Boolean,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier
@@ -340,10 +347,14 @@ private fun SelectedImageTile(
         bitmap?.let { loadedBitmap ->
             Image(
                 bitmap = remember(loadedBitmap) { loadedBitmap.asImageBitmap() },
-                contentDescription = "Selected image",
+                contentDescription = if (isVideo) "Selected video" else "Selected image",
                 modifier = Modifier.fillMaxSize().graphicsLayer { alpha = imageAlpha },
                 contentScale = ContentScale.Crop
             )
+        }
+
+        if (isVideo) {
+            VideoBadge(modifier = Modifier.align(Alignment.BottomStart).padding(8.dp))
         }
 
         Box(
@@ -354,7 +365,7 @@ private fun SelectedImageTile(
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
                 .clickable(enabled = enabled, onClick = onRemove)
-                .semantics { contentDescription = "Remove selected image" }
+                .semantics { contentDescription = if (isVideo) "Remove selected video" else "Remove selected image" }
                 .testTag("remove-image-${uri}"),
             contentAlignment = Alignment.Center
         ) {
@@ -379,6 +390,30 @@ private object ThumbnailCache {
     fun get(key: String): Bitmap? = cache.get(key)
     fun put(key: String, bitmap: Bitmap) {
         cache.put(key, bitmap)
+    }
+}
+
+@Composable
+private fun VideoBadge(modifier: Modifier = Modifier) {
+    val color = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(12.dp)) {
+            drawPath(
+                path = Path().apply {
+                    moveTo(size.width * 0.2f, 0f)
+                    lineTo(size.width, size.height / 2f)
+                    lineTo(size.width * 0.2f, size.height)
+                    close()
+                },
+                color = color
+            )
+        }
     }
 }
 

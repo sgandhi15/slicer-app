@@ -3,7 +3,7 @@ package com.example.slicer.storage
 import com.example.slicer.core.DEFAULT_COPY_BUFFER_BYTES
 import com.example.slicer.core.DEFAULT_OUTPUT_RELATIVE_PATH
 import com.example.slicer.core.LOG_TAG
-import com.example.slicer.core.imageMimeTypeForName
+import com.example.slicer.core.mediaMimeTypeForName
 import com.example.slicer.core.RetryableFailure
 
 import android.content.ContentUris
@@ -118,11 +118,11 @@ internal suspend fun Context.publishPreparedOutput(
 
         val copiedBytes = copyPreparedFile(tempFile, outputUri)
         if (copiedBytes != tempFile.length()) {
-            throw IOException("Published output size did not match the prepared image.")
+            throw IOException("Published output size did not match the prepared file.")
         }
         val destinationBytes = resolveContentSize(outputUri)
         if (destinationBytes >= 0L && destinationBytes != copiedBytes) {
-            throw IOException("The destination did not retain the complete prepared image.")
+            throw IOException("The destination did not retain the complete prepared file.")
         }
 
         if (isMediaStoreOutput) {
@@ -239,7 +239,12 @@ internal fun Context.deleteOutputDocument(uri: Uri): Boolean {
 }
 
 internal fun Context.cleanupOrphanedPendingMediaStoreOutputs(): Boolean {
-    val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    val imagesCleaned = cleanupOrphanedPendingOutputs(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
+    val videosCleaned = cleanupOrphanedPendingOutputs(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
+    return imagesCleaned && videosCleaned
+}
+
+private fun Context.cleanupOrphanedPendingOutputs(collection: Uri): Boolean {
     val selection = buildString {
         append(MediaStore.MediaColumns.RELATIVE_PATH)
         append(" = ? AND ")
@@ -283,7 +288,11 @@ private fun Context.createPendingMediaStoreOutput(fileName: String): Uri {
         put(MediaStore.MediaColumns.RELATIVE_PATH, DEFAULT_OUTPUT_RELATIVE_PATH)
         put(MediaStore.MediaColumns.IS_PENDING, 1)
     }
-    val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    val collection = if (outputMimeType(fileName).startsWith("video/")) {
+        MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    } else {
+        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    }
     return contentResolver.insert(collection, values)
         ?: throw OutputCreationNotPerformedException("Could not create pending MediaStore output.")
 }
@@ -301,7 +310,7 @@ private fun Context.createSafOutput(outputFolderUri: Uri, fileName: String): Uri
     ) ?: throw OutputCreationNotPerformedException("Could not create output in the selected folder.")
 }
 
-private fun outputMimeType(fileName: String) = imageMimeTypeForName(fileName) ?: "image/jpeg"
+private fun outputMimeType(fileName: String) = mediaMimeTypeForName(fileName) ?: "image/jpeg"
 
 private class OutputCreationNotPerformedException(message: String) : IOException(message)
 

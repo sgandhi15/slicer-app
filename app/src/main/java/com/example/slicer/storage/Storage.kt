@@ -13,12 +13,19 @@ import com.example.slicer.core.PREFS_FILE_NAME
 import com.example.slicer.core.PREFS_OUTPUT_FOLDER_URI_KEY
 import com.example.slicer.core.PREFS_QUALITY_KEY
 import com.example.slicer.core.PREFS_WELCOME_SCREEN_SEEN_KEY
+import com.example.slicer.core.DEFAULT_VIDEO_SHORT_SIDE
+import com.example.slicer.core.PREFS_VIDEO_QUALITY_KEY
+import com.example.slicer.core.PREFS_VIDEO_SHORT_SIDE_KEY
+import com.example.slicer.core.VIDEO_SHORT_SIDE_OPTIONS
+import com.example.slicer.core.VideoQuality
+import com.example.slicer.core.videoMimeTypeForName
 import com.example.slicer.core.RetryableFailure
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
@@ -67,7 +74,26 @@ internal fun Context.saveMaxDimension(value: Int) {
     getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).edit { putInt(PREFS_MAX_DIMENSION_KEY, value) }
 }
 
-internal fun Context.listImagesInFolder(treeUri: Uri): List<Uri> {
+internal fun Context.loadSavedVideoQuality(): VideoQuality {
+    val saved = getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).getString(PREFS_VIDEO_QUALITY_KEY, null)
+    return VideoQuality.entries.firstOrNull { it.name == saved } ?: VideoQuality.Balanced
+}
+
+internal fun Context.saveVideoQuality(value: VideoQuality) {
+    getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).edit { putString(PREFS_VIDEO_QUALITY_KEY, value.name) }
+}
+
+internal fun Context.loadSavedVideoShortSide(): Int {
+    val saved = getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE)
+        .getInt(PREFS_VIDEO_SHORT_SIDE_KEY, DEFAULT_VIDEO_SHORT_SIDE)
+    return saved.takeIf { it in VIDEO_SHORT_SIDE_OPTIONS } ?: DEFAULT_VIDEO_SHORT_SIDE
+}
+
+internal fun Context.saveVideoShortSide(value: Int) {
+    getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE).edit { putInt(PREFS_VIDEO_SHORT_SIDE_KEY, value) }
+}
+
+internal fun Context.listMediaInFolder(treeUri: Uri): List<Uri> {
     val children = DocumentsContract.buildChildDocumentsUriUsingTree(
         treeUri,
         DocumentsContract.getTreeDocumentId(treeUri)
@@ -77,16 +103,16 @@ internal fun Context.listImagesInFolder(treeUri: Uri): List<Uri> {
         DocumentsContract.Document.COLUMN_MIME_TYPE,
         DocumentsContract.Document.COLUMN_DISPLAY_NAME
     )
-    val images = mutableListOf<Pair<String, Uri>>()
+    val media = mutableListOf<Pair<String, Uri>>()
     contentResolver.query(children, projection, null, null, null)?.use { cursor ->
         while (cursor.moveToNext()) {
             val mimeType = cursor.getString(1) ?: continue
-            if (!mimeType.startsWith("image/")) continue
+            if (!mimeType.startsWith("image/") && !mimeType.startsWith("video/")) continue
             val name = cursor.getString(2).orEmpty()
-            images += name to DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
+            media += name to DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
         }
     }
-    return images.sortedBy { it.first.lowercase() }.map { it.second }
+    return media.sortedBy { it.first.lowercase() }.map { it.second }
 }
 
 internal fun Context.loadSavedOutputFolderUri(): Uri {
@@ -251,9 +277,16 @@ internal fun Context.resolveContentSize(uri: Uri): Long {
 internal fun Context.loadTileThumbnail(uri: Uri, size: Int = 512): Bitmap? =
     runCatching { contentResolver.loadThumbnail(uri, Size(size, size), null) }.getOrNull()
         ?.takeIf { maxOf(it.width, it.height) >= size / 2 }
-        ?: loadBitmapForPreview(uri, maxDimension = size)
+        ?: if (isVideoUri(uri)) loadVideoFrame(uri, size, exactFrame = false) else loadBitmapForPreview(uri, size)
+
+internal fun Context.isVideoUri(uri: Uri): Boolean {
+    val type = runCatching { contentResolver.getType(uri) }.getOrNull()
+        ?: uri.lastPathSegment?.let(::videoMimeTypeForName)
+    return type?.startsWith("video/") == true
+}
 
 internal fun Context.loadBitmapForPreview(uri: Uri, maxDimension: Int = 1400): Bitmap? {
+    if (isVideoUri(uri)) return loadVideoFrame(uri, maxDimension, exactFrame = true)
     val bounds = BitmapFactory.Options().apply {
         inJustDecodeBounds = true
     }
@@ -288,6 +321,16 @@ internal fun Context.loadBitmapForPreview(uri: Uri, maxDimension: Int = 1400): B
         resolveBitmapOrientation(uri, bitmap)
     }
 }
+
+/** A frame a third of the way in, so an original and its compressed copy show the same moment. */
+private fun Context.loadVideoFrame(uri: Uri, maxDimension: Int, exactFrame: Boolean): Bitmap? = runCatching {
+    MediaMetadataRetriever().use { retriever ->
+        retriever.setDataSource(this, uri)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val option = if (exactFrame) MediaMetadataRetriever.OPTION_CLOSEST else MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+        retriever.getScaledFrameAtTime(durationMs * 1000L / 3L, option, maxDimension, maxDimension)
+    }
+}.getOrNull()
 
 private fun Context.resolveBitmapOrientation(uri: Uri, bitmap: Bitmap): Bitmap {
     val orientation = contentResolver.openInputStream(uri)?.use { input ->

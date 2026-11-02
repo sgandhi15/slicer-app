@@ -7,14 +7,20 @@ import com.example.slicer.core.DEFAULT_QUALITY
 import com.example.slicer.core.FULL_SIZE
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.SlicerScreen
+import com.example.slicer.core.DEFAULT_VIDEO_SHORT_SIDE
+import com.example.slicer.core.VideoQuality
 import com.example.slicer.storage.OutputFolderAccess
 import com.example.slicer.storage.clearOutputFolderUri
 import com.example.slicer.storage.loadBitmapForPreview
 import com.example.slicer.storage.loadSavedOutputFolderUri
-import com.example.slicer.storage.listImagesInFolder
+import com.example.slicer.storage.listMediaInFolder
 import com.example.slicer.storage.loadSavedMaxDimension
 import com.example.slicer.storage.loadSavedQuality
+import com.example.slicer.storage.loadSavedVideoQuality
+import com.example.slicer.storage.loadSavedVideoShortSide
 import com.example.slicer.storage.saveMaxDimension
+import com.example.slicer.storage.saveVideoQuality
+import com.example.slicer.storage.saveVideoShortSide
 import com.example.slicer.storage.markWelcomeScreenSeen
 import com.example.slicer.storage.outputFolderAccess
 import com.example.slicer.storage.saveOutputFolderUri
@@ -136,6 +142,8 @@ fun SlicerHomeScreen(
     var notificationMessage by remember { mutableStateOf<String?>(null) }
     var isNotificationVisible by remember { mutableStateOf(false) }
     var maxDimension by rememberSaveable { mutableIntStateOf(FULL_SIZE) }
+    var videoQuality by rememberSaveable { mutableStateOf(VideoQuality.Balanced) }
+    var videoShortSide by rememberSaveable { mutableIntStateOf(DEFAULT_VIDEO_SHORT_SIDE) }
     val scope = rememberCoroutineScope()
 
     fun notify(title: String, message: String) {
@@ -203,8 +211,8 @@ fun SlicerHomeScreen(
 
         compareError = when {
             originalBitmap == null ->
-                "Original image access is no longer available after source cleanup."
-            compressedBitmap == null -> "Could not load processed image."
+                "Original file access is no longer available after source cleanup."
+            compressedBitmap == null -> "Could not load the processed file."
             result.decision == ProcessingDecision.Failed -> "No comparison available for this result."
             else -> null
         }
@@ -213,6 +221,8 @@ fun SlicerHomeScreen(
     LaunchedEffect(Unit) {
         quality = context.loadSavedQuality()
         maxDimension = context.loadSavedMaxDimension()
+        videoQuality = context.loadSavedVideoQuality()
+        videoShortSide = context.loadSavedVideoShortSide()
         val restoredOutputFolder = context.loadSavedOutputFolderUri()
         outputFolder = restoredOutputFolder
         status = null
@@ -251,6 +261,13 @@ fun SlicerHomeScreen(
         if (didLoadPreferences) context.saveMaxDimension(maxDimension)
     }
 
+    LaunchedEffect(videoQuality, videoShortSide, didLoadPreferences) {
+        if (didLoadPreferences) {
+            context.saveVideoQuality(videoQuality)
+            context.saveVideoShortSide(videoShortSide)
+        }
+    }
+
     LaunchedEffect(quality, didLoadPreferences) {
         if (didLoadPreferences) {
             // Restarts on every slider step, so dragging saves once when it settles.
@@ -286,18 +303,18 @@ fun SlicerHomeScreen(
             return@rememberLauncherForActivityResult
         }
         scope.launch {
-            val images = withContext(Dispatchers.IO) {
-                runCatching { context.listImagesInFolder(treeUri) }.getOrDefault(emptyList())
+            val media = withContext(Dispatchers.IO) {
+                runCatching { context.listMediaInFolder(treeUri) }.getOrDefault(emptyList())
             }
-            if (images.isEmpty()) {
-                notify("No images found", "That folder has no images directly inside it.")
+            if (media.isEmpty()) {
+                notify("Nothing to compress", "That folder has no photos or videos directly inside it.")
                 return@launch
             }
-            if (images.size > MAX_SELECTED_IMAGES) {
-                notify("Folder added", "Only the first $MAX_SELECTED_IMAGES of ${images.size} images were added.")
+            if (media.size > MAX_SELECTED_IMAGES) {
+                notify("Folder added", "Only the first $MAX_SELECTED_IMAGES of ${media.size} files were added.")
             }
             status = null
-            homeViewModel.validateImageSelection(images)
+            homeViewModel.validateImageSelection(media)
             homeViewModel.dismissCurrentBatch()
             selectedResultForComparison = null
             currentScreen = SlicerScreen.Setup
@@ -353,10 +370,9 @@ fun SlicerHomeScreen(
     val canStart = selectedImages.isNotEmpty() && !selectionState.isValidating && !isProcessing
 
     fun startPersistedBatch(files: List<Uri>, folder: Uri, qualityValue: Int) {
-        val sizeLimit = maxDimension
         status = "Preparing batch..."
         currentScreen = SlicerScreen.Processing
-        homeViewModel.startBatch(files, folder, qualityValue, sizeLimit)
+        homeViewModel.startBatch(files, folder, qualityValue, maxDimension, videoQuality, videoShortSide)
     }
 
     fun startProcessing() {
@@ -364,7 +380,7 @@ fun SlicerHomeScreen(
         val folder = outputFolder
         val files = selectedImages.toList()
         if (files.isEmpty()) {
-            status = "No images selected."
+            status = "No files selected."
             return
         }
 
@@ -434,11 +450,12 @@ fun SlicerHomeScreen(
                         ) {
                             BatchSetupContent(
                                 selectedImages = selectedImages,
+                                selectedVideos = selectionState.selectedVideos,
                                 isValidating = selectionState.isValidating,
                                 validatedCount = selectionState.validatedCount,
                                 validationTotal = selectionState.totalCount,
                                 controlsEnabled = !isProcessing,
-                                onSelectImages = { imagePicker.launch(arrayOf("image/*")) },
+                                onSelectImages = { imagePicker.launch(arrayOf("image/*", "video/*")) },
                                 onSelectFolder = { sourceFolderPicker.launch(null) },
                                 onRemoveImage = { uri ->
                                     homeViewModel.removeSelectedImage(uri)
@@ -466,7 +483,7 @@ fun SlicerHomeScreen(
                                         text = if (selectionState.isValidating) {
                                             "Validating ${selectionState.validatedCount} of ${selectionState.totalCount}"
                                         } else if (selectedImages.isEmpty()) {
-                                            "Select up to $MAX_SELECTED_IMAGES images"
+                                            "Select up to $MAX_SELECTED_IMAGES photos or videos"
                                         } else if (selectedImages.size == 1) {
                                             "1 file selected"
                                         } else {
@@ -505,17 +522,30 @@ fun SlicerHomeScreen(
                                     .padding(bottom = 76.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
-                                QualityStepContent(
-                                    quality = quality,
-                                    controlsEnabled = !isProcessing,
-                                    onQualityChange = { quality = it }
-                                )
+                                if (selectionState.hasImages) {
+                                    QualityStepContent(
+                                        quality = quality,
+                                        controlsEnabled = !isProcessing,
+                                        onQualityChange = { quality = it },
+                                        title = if (selectionState.hasVideos) "Photo quality" else "Compression quality"
+                                    )
 
-                                ImageSizeSection(
-                                    maxDimension = maxDimension,
-                                    controlsEnabled = !isProcessing,
-                                    onMaxDimensionChange = { maxDimension = it }
-                                )
+                                    ImageSizeSection(
+                                        maxDimension = maxDimension,
+                                        controlsEnabled = !isProcessing,
+                                        onMaxDimensionChange = { maxDimension = it }
+                                    )
+                                }
+
+                                if (selectionState.hasVideos) {
+                                    VideoSettingsSection(
+                                        quality = videoQuality,
+                                        shortSide = videoShortSide,
+                                        controlsEnabled = !isProcessing,
+                                        onQualityChange = { videoQuality = it },
+                                        onShortSideChange = { videoShortSide = it }
+                                    )
+                                }
 
                                 DestinationSection(
                                     outputFolder = outputFolder,
@@ -532,8 +562,20 @@ fun SlicerHomeScreen(
                                 status?.let { NoticeText(message = it) }
 
                                 Text(
-                                    text = "HEIC, PNG and other non-JPEG images are copied unchanged, " +
-                                    "and so are JPEGs that can't get any smaller.",
+                                    text = buildList {
+                                        if (selectionState.hasImages) {
+                                            add(
+                                                "HEIC, PNG and other non-JPEG images are copied unchanged, " +
+                                                    "and so are JPEGs that can't get any smaller."
+                                            )
+                                        }
+                                        if (selectionState.hasVideos) {
+                                            add(
+                                                "Videos are saved as MP4. Videos that can't be converted " +
+                                                    "or get no smaller are copied unchanged."
+                                            )
+                                        }
+                                    }.joinToString(" "),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -653,7 +695,7 @@ fun SlicerHomeScreen(
                                     OutlinedButton(
                                         onClick = {
                                             homeViewModel.cancelBatch()
-                                            status = "Cancelling after the current image..."
+                                            status = "Cancelling..."
                                         },
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -725,7 +767,7 @@ fun SlicerHomeScreen(
                                     .height(52.dp),
                                 shape = MaterialTheme.shapes.small
                             ) {
-                                Text("Choose more images")
+                                Text("Choose more files")
                             }
                         }
                     }

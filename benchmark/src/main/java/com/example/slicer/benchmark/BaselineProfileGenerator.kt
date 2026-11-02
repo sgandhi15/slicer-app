@@ -17,6 +17,6 @@ class BaselineProfileGenerator {
     fun startup() = baselineProfileRule.collect(packageName = "com.example.slicer.benchmark") {
         pressHome()
         startActivityAndWait()
-        device.wait(Until.hasObject(By.text("Choose images")), 5_000)
+        device.wait(Until.hasObject(By.text("Choose files")), 5_000)
     }
 }

@@ -1,6 +1,8 @@
 package com.example.slicer.batch
 
 import com.example.slicer.core.FULL_SIZE
+import com.example.slicer.core.ORIGINAL_RESOLUTION
+import com.example.slicer.core.VideoQuality
 import android.content.Context
 import android.content.ContentResolver
 import android.net.Uri
@@ -71,10 +73,14 @@ internal class BatchRepository(
         destinationUri: Uri,
         quality: Int,
         cancellationRequested: () -> Boolean = { false },
-        maxDimension: Int = FULL_SIZE
+        maxDimension: Int = FULL_SIZE,
+        videoQuality: VideoQuality = VideoQuality.Balanced,
+        videoShortSide: Int = ORIGINAL_RESOLUTION
     ): String = withContext(Dispatchers.IO) {
         sourceLifecycleMutex.withLock {
-            createAndEnqueueBatchLocked(sourceUris, destinationUri, quality, cancellationRequested, maxDimension)
+            createAndEnqueueBatchLocked(
+                sourceUris, destinationUri, quality, cancellationRequested, maxDimension, videoQuality, videoShortSide
+            )
         }
     }
 
@@ -83,21 +89,23 @@ internal class BatchRepository(
         destinationUri: Uri,
         quality: Int,
         cancellationRequested: () -> Boolean,
-        maxDimension: Int
+        maxDimension: Int,
+        videoQuality: VideoQuality,
+        videoShortSide: Int
     ): String {
-        require(sourceUris.isNotEmpty()) { "Select at least one image." }
+        require(sourceUris.isNotEmpty()) { "Select at least one file." }
 
         val distinctSourceUris = sourceUris.distinct()
         reconcileSourcePermissionsLocked(protectedUris = distinctSourceUris.toSet())
         require(distinctSourceUris.size <= MAX_PERSISTED_SOURCES_PER_BATCH) {
-            "Select at most $MAX_PERSISTED_SOURCES_PER_BATCH images per batch."
+            "Select at most $MAX_PERSISTED_SOURCES_PER_BATCH files per batch."
         }
         val readablePersistedUris = sourceUriPermissions.persistedReadUris().toMutableSet()
         val requiredNewGrants = distinctSourceUris.count { uri ->
             uri.requiresPersistedReadPermission() && !uri.hasReadAccessIn(readablePersistedUris)
         }
         check(sourceUriPermissions.persistedPermissionCount() + requiredNewGrants <= PERSISTED_URI_GRANT_BUDGET) {
-            "Not enough durable file-access slots are available. Finish existing work or select fewer images."
+            "Not enough durable file-access slots are available. Finish existing work or select fewer files."
         }
 
         val batchId = UUID.randomUUID().toString()
@@ -114,6 +122,8 @@ internal class BatchRepository(
             createdAt = System.currentTimeMillis(),
             quality = quality,
             maxDimension = maxDimension,
+            videoQuality = videoQuality,
+            videoShortSide = videoShortSide,
             destinationUri = destinationUri.toString(),
             totalCount = items.size
         )

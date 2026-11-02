@@ -71,7 +71,7 @@ class ScreenCatalogCapture {
         screen("slicer-setup-screen")
         capture("02-selection-empty")
 
-        compose.onNodeWithText("Select images").performClick()
+        compose.onNodeWithText("Select photos & videos").performClick()
         systemWindow("com.google.android.documentsui")
         capture("03-system-image-picker", settle = false)
         instrumentation.uiAutomation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
@@ -95,7 +95,7 @@ class ScreenCatalogCapture {
         capture("04a-selection-validating")
         validationGate.complete(Unit)
         compose.waitUntil(10_000) { viewModel.selectionState.value.selectedImages.size == 4 }
-        compose.onNodeWithText("Selected images").assertIsDisplayed()
+        compose.onNodeWithText("Selected files").assertIsDisplayed()
         capture("04-selection-populated")
         compose.onNodeWithText("Continue to quality").performClick()
         screen("slicer-quality-screen")

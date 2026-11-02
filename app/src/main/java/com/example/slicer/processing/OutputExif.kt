@@ -74,7 +74,7 @@ private fun ExifInterface.writeDateTaken(date: Date) {
 }
 
 /** A WhatsApp-style name's day survives copies, unlike the file's own time, so it wins. */
-private fun Context.bestDateFor(uri: Uri): Date? {
+internal fun Context.bestDateFor(uri: Uri): Date? {
     val (name, modifiedMillis) = nameAndModifiedTime(uri)
     val fileTime = modifiedMillis?.takeIf { it > 0L }?.let(::Date)
     val receivedDay = name?.let(::receivedDayFromName) ?: return fileTime

@@ -8,10 +8,11 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.slicer.core.VideoQuality
 
 @Database(
     entities = [BatchEntity::class, BatchItemEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(BatchConverters::class)
@@ -62,12 +63,19 @@ internal abstract class BatchDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `batches` ADD COLUMN `videoQuality` TEXT NOT NULL DEFAULT 'Balanced'")
+                db.execSQL("ALTER TABLE `batches` ADD COLUMN `videoShortSide` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun create(context: Context): BatchDatabase = Room.databaseBuilder(
             context.applicationContext,
             BatchDatabase::class.java,
             "slicer-batches.db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
     }
 }
@@ -84,4 +92,11 @@ internal class BatchConverters {
 
     @TypeConverter
     fun stringToItemState(value: String): BatchItemState = BatchItemState.valueOf(value)
+
+    @TypeConverter
+    fun videoQualityToString(value: VideoQuality): String = value.name
+
+    @TypeConverter
+    fun stringToVideoQuality(value: String): VideoQuality =
+        VideoQuality.entries.firstOrNull { it.name == value } ?: VideoQuality.Balanced
 }

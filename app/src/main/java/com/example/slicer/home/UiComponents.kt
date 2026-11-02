@@ -4,6 +4,7 @@ import com.example.slicer.core.BatchFileResult
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.ProcessingProgress
 import com.example.slicer.core.isJpegFileName
+import com.example.slicer.core.isVideoFileName
 import com.example.slicer.shared.formatByteCount
 import com.example.slicer.shared.formatSavedPercentage
 
@@ -61,10 +62,12 @@ internal fun ProcessingPanel(
     progress: ProcessingProgress,
     modifier: Modifier = Modifier
 ) {
+    // A video takes minutes, so its own progress moves the bar between whole files.
+    val currentFileShare = (progress.currentFilePercent ?: 0) / 100f
     val ratio = if (progress.total <= 0) {
         0f
     } else {
-        progress.completed.toFloat() / progress.total.toFloat()
+        ((progress.completed + currentFileShare) / progress.total.toFloat()).coerceAtMost(1f)
     }
 
     Column(
@@ -73,7 +76,7 @@ internal fun ProcessingPanel(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Compressing images",
+            text = "Compressing",
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurface
         )
@@ -107,7 +110,7 @@ internal fun ProcessingPanel(
 
         progress.currentFile?.let { currentFile ->
             Text(
-                text = currentFile,
+                text = progress.currentFilePercent?.let { "$currentFile · $it%" } ?: currentFile,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -268,7 +271,7 @@ internal fun BatchResultsPanel(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
-                    text = "Images",
+                    text = "Files",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -360,7 +363,8 @@ private fun BatchResultRow(
     onResultClick: () -> Unit
 ) {
     // Non-JPEG images were copied byte for byte, so there is nothing to compare.
-    val copiedAsIs = result.decision == ProcessingDecision.CopiedOriginal && !isJpegFileName(result.inputName)
+    val copiedAsIs = result.decision == ProcessingDecision.CopiedOriginal &&
+        !isJpegFileName(result.inputName) && !isVideoFileName(result.inputName)
     val decisionLabel = when (result.decision) {
         ProcessingDecision.Compressed -> "Compressed"
         ProcessingDecision.CopiedOriginal -> if (copiedAsIs) "Copied as-is" else "Kept original"

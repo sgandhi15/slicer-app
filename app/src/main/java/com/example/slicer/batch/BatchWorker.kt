@@ -16,10 +16,14 @@ import androidx.work.WorkerParameters
 import com.example.slicer.MainActivity
 import com.example.slicer.R
 import com.example.slicer.core.isJpegFileName
+import com.example.slicer.core.isVideoFileName
 import com.example.slicer.SlicerApplication
 import com.example.slicer.core.LOG_TAG
 import com.example.slicer.core.ProcessingDecision
 import com.example.slicer.core.RetryableCleanupException
+import com.example.slicer.processing.PreparedBatchOutput
+import com.example.slicer.processing.VideoSettings
+import com.example.slicer.processing.compressVideo
 import com.example.slicer.processing.parallelEncoderCount
 import com.example.slicer.processing.processBatchItem
 import com.example.slicer.processing.JpegStatePersistenceException
@@ -38,6 +42,7 @@ import com.example.slicer.telemetry.ProcessingStage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.IOException
 
 internal class BatchWorker(
@@ -151,40 +156,49 @@ internal class BatchWorker(
 
             try {
                 val tempFile = applicationContext.createOutputTempFile(item.id)
+                val isVideo = isVideoFileName(outputName)
                 val encodedAhead = ahead?.take(item, tempFile)?.takeIf { recordDimensionsFrom(item, it) }
-                val prepared = encodedAhead?.output ?: processBatchItem(
-                    context = applicationContext,
-                    inputUri = item.sourceUri.toUri(),
-                    tempFile = tempFile,
-                    quality = batch.quality,
-                    inputBytes = item.inputBytes,
-                    knownDimensions = item.persistedDimensions(),
-                    onDimensionsRead = { dimensions ->
-                        try {
-                            if (dao.recordDimensions(item.id, dimensions.width, dimensions.height) != 1) {
-                                throw JpegStatePersistenceException("Could not persist source dimensions.")
+                val prepared = when {
+                    isVideo -> compressVideoItem(batch, item, inputName, tempFile, metrics)
+                    encodedAhead != null -> encodedAhead.output
+                    else -> processBatchItem(
+                        context = applicationContext,
+                        inputUri = item.sourceUri.toUri(),
+                        tempFile = tempFile,
+                        quality = batch.quality,
+                        inputBytes = item.inputBytes,
+                        knownDimensions = item.persistedDimensions(),
+                        onDimensionsRead = { dimensions ->
+                            try {
+                                if (dao.recordDimensions(item.id, dimensions.width, dimensions.height) != 1) {
+                                    throw JpegStatePersistenceException("Could not persist source dimensions.")
+                                }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: JpegStatePersistenceException) {
+                                throw error
+                            } catch (error: Exception) {
+                                throw JpegStatePersistenceException(
+                                    "Could not persist source dimensions.",
+                                    error
+                                )
                             }
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: JpegStatePersistenceException) {
-                            throw error
-                        } catch (error: Exception) {
-                            throw JpegStatePersistenceException(
-                                "Could not persist source dimensions.",
-                                error
-                            )
-                        }
-                    },
-                    metrics = metrics,
-                    passThrough = !isJpegFileName(outputName),
-                    maxDimension = batch.maxDimension,
-                    budgetShares = ahead?.budgetShares ?: 1
-                )
+                        },
+                        metrics = metrics,
+                        passThrough = !isJpegFileName(outputName),
+                        maxDimension = batch.maxDimension,
+                        budgetShares = ahead?.budgetShares ?: 1
+                    )
+                }
                 val published = metrics.measure(ProcessingStage.Publication) {
                     applicationContext.publishPreparedOutput(
                         tempFile = tempFile,
                         outputFolderUri = batch.destinationUri.toUri(),
-                        outputName = outputName,
+                        outputName = if (isVideo && prepared.decision == ProcessingDecision.Compressed) {
+                            outputName.withMp4Extension()
+                        } else {
+                            outputName
+                        },
                         itemId = item.id,
                         onOutputCreationStarting = {
                             check(dao.markOutputCreationStarted(item.id) == 1) {
@@ -252,6 +266,29 @@ internal class BatchWorker(
         dao.finishBatch(batchId)
     }
 
+    private suspend fun compressVideoItem(
+        batch: BatchEntity,
+        item: BatchItemEntity,
+        inputName: String,
+        tempFile: File,
+        metrics: ProcessingMetricsRecorder
+    ): PreparedBatchOutput = try {
+        applicationContext.compressVideo(
+            inputUri = item.sourceUri.toUri(),
+            outputFile = tempFile,
+            inputBytes = item.inputBytes,
+            settings = VideoSettings(batch.videoQuality, batch.videoShortSide),
+            metrics = metrics,
+            onProgress = { percent ->
+                VideoProgress.report(item.id, percent)
+                setForeground(createForegroundInfo(batch, "$inputName · $percent%"))
+            },
+            isCancelled = { dao.getBatch(batch.id)?.cancellationRequested == true }
+        )
+    } finally {
+        VideoProgress.clear()
+    }
+
     private suspend fun handleItemFailure(item: BatchItemEntity, error: Exception) {
         val cleanup = withContext(NonCancellable) {
             if (error is OutputPublicationException &&
@@ -273,13 +310,13 @@ internal class BatchWorker(
         val current = dao.getItem(item.id) ?: return
         if (current.state != BatchItemState.Processing) return
 
-        val message = error.message ?: "Image processing failed."
+        val message = error.message ?: "Processing failed."
         if (error.isRetryableItemFailure()) {
             dao.requeueOrFailProcessingItem(
                 itemId = current.id,
                 batchId = current.batchId,
                 maxAttempts = MAX_ITEM_ATTEMPTS,
-                message = "$message The image could not be processed after $MAX_ITEM_ATTEMPTS attempts."
+                message = "$message The file could not be processed after $MAX_ITEM_ATTEMPTS attempts."
             )
             repository.releaseSourcePermissionIfUnused(current.sourceUri.toUri())
             if (dao.getItem(current.id)?.state == BatchItemState.Queued) {
@@ -359,7 +396,7 @@ internal class BatchWorker(
         setForeground(
             createForegroundInfo(
                 batch,
-                "Preparing image ${item.position + 1} of ${batch.totalCount}"
+                "Preparing file ${item.position + 1} of ${batch.totalCount}"
             )
         )
         val prepared = prepareMetadata(batch, item) != null
@@ -407,6 +444,8 @@ internal class BatchWorker(
         return "${stem.take(80).ifBlank { "image" }}-slicer-$batchToken-${position + 1}$extension"
     }
 
+    private fun String.withMp4Extension(): String = "${substringBeforeLast('.')}.mp4"
+
     private fun BatchItemEntity.persistedDimensions() =
         if (width > 0 && height > 0) com.example.slicer.processing.JpegDimensions(width, height) else null
 
@@ -433,8 +472,8 @@ internal class BatchWorker(
         val total = batch?.totalCount ?: 0
         val text = when {
             currentFile != null -> currentFile
-            total > 0 -> "$completed of $total images processed"
-            else -> "Preparing image batch"
+            total > 0 -> "$completed of $total files processed"
+            else -> "Preparing batch"
         }
         val launchIntent = Intent(applicationContext, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -445,7 +484,7 @@ internal class BatchWorker(
         )
         val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.logo_monochrome)
-            .setContentTitle("Slicer is compressing images")
+            .setContentTitle("Slicer is compressing")
             .setContentText(text)
             .setContentIntent(pendingIntent)
             .setOnlyAlertOnce(true)
@@ -473,7 +512,7 @@ internal class BatchWorker(
         manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "Image compression",
+                "Compression",
                 NotificationManager.IMPORTANCE_LOW
             )
         )

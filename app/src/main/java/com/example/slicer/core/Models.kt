@@ -16,9 +16,23 @@ internal const val PREFS_QUALITY_KEY = "last_quality"
 internal const val PREFS_OUTPUT_FOLDER_URI_KEY = "output_folder_uri"
 internal const val PREFS_WELCOME_SCREEN_SEEN_KEY = "welcome_screen_seen"
 internal const val PREFS_MAX_DIMENSION_KEY = "max_dimension"
+internal const val PREFS_VIDEO_QUALITY_KEY = "video_quality"
+internal const val PREFS_VIDEO_SHORT_SIDE_KEY = "video_short_side"
 
 internal const val FULL_SIZE = 0
 internal val MAX_DIMENSION_OPTIONS = listOf(FULL_SIZE, 3000, 2048, 1280)
+
+/** Videos are limited by their short side, so portrait and landscape clips get the same treatment. */
+internal const val ORIGINAL_RESOLUTION = 0
+internal const val DEFAULT_VIDEO_SHORT_SIDE = 1080
+internal val VIDEO_SHORT_SIDE_OPTIONS = listOf(ORIGINAL_RESOLUTION, 1080, 720, 480)
+
+/** Bits per pixel per frame for HEVC; H.264 needs about half as much again for the same look. */
+internal enum class VideoQuality(val label: String, val description: String, val bitsPerPixel: Double) {
+    Small("Small", "Prioritize smaller files.", 0.045),
+    Balanced("Balanced", "Balance quality and file size.", 0.07),
+    Best("Best", "Preserve more video detail.", 0.11)
+}
 
 internal val DEFAULT_OUTPUT_FOLDER_URI: Uri = "content://com.example.slicer.default/output/pictures_slicer".toUri()
 internal val DEFAULT_OUTPUT_RELATIVE_PATH = "${Environment.DIRECTORY_PICTURES}/Slicer/"
@@ -38,6 +52,15 @@ internal fun imageMimeTypeForName(name: String): String? =
     MimeTypeMap.getSingleton()
         .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase(Locale.ROOT))
         ?.takeIf { it.startsWith("image/") }
+
+internal fun isVideoFileName(name: String): Boolean = videoMimeTypeForName(name) != null
+
+internal fun videoMimeTypeForName(name: String): String? =
+    MimeTypeMap.getSingleton()
+        .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase(Locale.ROOT))
+        ?.takeIf { it.startsWith("video/") }
+
+internal fun mediaMimeTypeForName(name: String): String? = imageMimeTypeForName(name) ?: videoMimeTypeForName(name)
 
 internal const val DEFAULT_COPY_BUFFER_BYTES = 16_384
 
@@ -75,7 +98,8 @@ internal data class ProcessingProgress(
     val copiedCount: Int = 0,
     val failedCount: Int = 0,
     val cancelledCount: Int = 0,
-    val currentFile: String? = null
+    val currentFile: String? = null,
+    val currentFilePercent: Int? = null
 )
 
 internal data class BatchFileResult(

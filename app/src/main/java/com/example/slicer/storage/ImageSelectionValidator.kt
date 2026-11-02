@@ -3,6 +3,7 @@ package com.example.slicer.storage
 import com.example.slicer.core.JPEG_EXTENSION_SET
 import com.example.slicer.core.JPEG_MIME_TYPE_SET
 import com.example.slicer.core.imageMimeTypeForName
+import com.example.slicer.core.videoMimeTypeForName
 
 import android.content.Context
 import android.net.Uri
@@ -23,6 +24,7 @@ import kotlin.coroutines.resumeWithException
 
 internal enum class ImageSelectionOutcome {
     Supported,
+    SupportedVideo,
     Unsupported,
     Inaccessible
 }
@@ -45,6 +47,14 @@ internal class ContentResolverImageSelectionValidator(
                 .substringAfterLast('.', "")
                 .lowercase(Locale.ROOT)
                 .trim()
+            if (mimeType?.startsWith("video/") == true) {
+                // Videos are re-encoded to MP4; their name only needs a known video extension.
+                return if (videoMimeTypeForName(metadata.displayName) != null) {
+                    ImageSelectionOutcome.SupportedVideo
+                } else {
+                    ImageSelectionOutcome.Unsupported
+                }
+            }
             if (mimeType !in JPEG_MIME_TYPE_SET || extension !in JPEG_EXTENSION_SET) {
                 // Other images (HEIC, PNG, WebP...) are copied unchanged. They only need a name
                 // whose extension is a known image type, so the copy is saved as the same type.

@@ -273,20 +273,21 @@ private suspend fun processSingleImage(
     )
 }
 
-/** Non-JPEG images are copied byte for byte; the copy must match the source size exactly. */
-private suspend fun copyUnchanged(
+/** Copies the source byte for byte; the copy must match the source size exactly. */
+internal suspend fun copyUnchanged(
     context: Context,
     inputUri: Uri,
     tempFile: File,
     inputBytes: Long,
-    metrics: ProcessingMetricsRecorder
+    metrics: ProcessingMetricsRecorder,
+    message: String? = null
 ): PreparedBatchOutput {
     val copiedBytes = metrics.measure(ProcessingStage.OriginalCopy) {
         context.copyUriContent(inputUri, tempFile.toUri())
     }
     metrics.recordIo(ProcessingStage.OriginalCopy, bytesRead = copiedBytes, bytesWritten = copiedBytes)
     if (copiedBytes <= 0L || tempFile.length() != copiedBytes) {
-        throw IOException("The image could not be copied.")
+        throw IOException("The file could not be copied.")
     }
     if (inputBytes > 0L && copiedBytes != inputBytes) {
         throw SourceChangedException("Source changed while it was being copied.")
@@ -294,7 +295,7 @@ private suspend fun copyUnchanged(
     return PreparedBatchOutput(
         decision = ProcessingDecision.CopiedOriginal,
         outputBytes = copiedBytes,
-        message = null
+        message = message
     )
 }
 
