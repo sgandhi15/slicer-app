@@ -77,7 +77,6 @@ internal suspend fun Context.preserveJpegMetadata(
                 }
                 if (result is MetadataRewriteResult.Rewritten) {
                     boundedOutput.flush()
-                    fileOutput.fd.sync()
                     outputBytes = boundedOutput.bytesWritten
                 }
                 result

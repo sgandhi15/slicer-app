@@ -219,11 +219,22 @@ fun SlicerHomeScreen(
     }
 
     LaunchedEffect(Unit) {
-        quality = context.loadSavedQuality()
-        maxDimension = context.loadSavedMaxDimension()
-        videoQuality = context.loadSavedVideoQuality()
-        videoShortSide = context.loadSavedVideoShortSide()
-        val restoredOutputFolder = context.loadSavedOutputFolderUri()
+        val savedQuality: Int
+        val savedMaxDimension: Int
+        val savedVideoQuality: VideoQuality
+        val savedVideoShortSide: Int
+        val restoredOutputFolder: Uri
+        withContext(Dispatchers.IO) {
+            savedQuality = context.loadSavedQuality()
+            savedMaxDimension = context.loadSavedMaxDimension()
+            savedVideoQuality = context.loadSavedVideoQuality()
+            savedVideoShortSide = context.loadSavedVideoShortSide()
+            restoredOutputFolder = context.loadSavedOutputFolderUri()
+        }
+        quality = savedQuality
+        maxDimension = savedMaxDimension
+        videoQuality = savedVideoQuality
+        videoShortSide = savedVideoShortSide
         outputFolder = restoredOutputFolder
         status = null
         didLoadPreferences = true
@@ -333,33 +344,35 @@ fun SlicerHomeScreen(
                 true
             }.getOrNull() == true
 
-            val folderAccess = context.outputFolderAccess(uri)
+            scope.launch {
+                val folderAccess = withContext(Dispatchers.IO) { context.outputFolderAccess(uri) }
 
-            if (persistenceGranted && folderAccess == OutputFolderAccess.Writable) {
-                outputFolder = uri
-                context.saveOutputFolderUri(uri)
-                if (durableState.needsDestination) {
-                    status = "Resuming batch with the new output folder..."
-                    homeViewModel.replaceDestination(uri)
+                if (persistenceGranted && folderAccess == OutputFolderAccess.Writable) {
+                    outputFolder = uri
+                    context.saveOutputFolderUri(uri)
+                    if (durableState.needsDestination) {
+                        status = "Resuming batch with the new output folder..."
+                        homeViewModel.replaceDestination(uri)
+                    } else {
+                        status = "Output folder selected and saved."
+                    }
+                } else if (persistenceGranted && folderAccess == OutputFolderAccess.TemporarilyUnavailable) {
+                    outputFolder = uri
+                    context.saveOutputFolderUri(uri)
+                    status = "Selected folder is temporarily unavailable. Try again when its provider is ready."
                 } else {
-                    status = "Output folder selected and saved."
+                    outputFolder = DEFAULT_OUTPUT_FOLDER_URI
+                    context.clearOutputFolderUri()
+                    status = if (folderAccess == OutputFolderAccess.PermissionMissing) {
+                        "Could not use selected folder. Please choose another location."
+                    } else {
+                        "Output folder selected for this session, but persistence could not be saved. " +
+                            "Please reselect on next app open."
+                    }
                 }
-            } else if (persistenceGranted && folderAccess == OutputFolderAccess.TemporarilyUnavailable) {
-                outputFolder = uri
-                context.saveOutputFolderUri(uri)
-                status = "Selected folder is temporarily unavailable. Try again when its provider is ready."
-            } else {
-                outputFolder = DEFAULT_OUTPUT_FOLDER_URI
-                context.clearOutputFolderUri()
-                status = if (folderAccess == OutputFolderAccess.PermissionMissing) {
-                    "Could not use selected folder. Please choose another location."
-                } else {
-                    "Output folder selected for this session, but persistence could not be saved. " +
-                        "Please reselect on next app open."
-                }
+                selectedResultForComparison = null
+                if (!durableState.needsDestination) homeViewModel.dismissCurrentBatch()
             }
-            selectedResultForComparison = null
-            if (!durableState.needsDestination) homeViewModel.dismissCurrentBatch()
         }
     }
 

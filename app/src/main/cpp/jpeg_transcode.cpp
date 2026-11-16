@@ -138,12 +138,12 @@ void readRow(State* state, JSAMPARRAY row) {
 }
 
 // Streams the decoded rows through a bilinear resample, holding only two decoded rows at a time.
-void writeResampled(State* state, JDIMENSION targetWidth, JDIMENSION targetHeight) {
+void writeResampled(State* state, JDIMENSION targetWidth, JDIMENSION targetHeight, int components) {
     auto* decoder = &state->decoder;
     auto* codec = reinterpret_cast<j_common_ptr>(decoder);
     const JDIMENSION sourceWidth = decoder->output_width;
-    JSAMPARRAY lines = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, sourceWidth * 3, 2);
-    JSAMPARRAY out = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, targetWidth * 3, 1);
+    JSAMPARRAY lines = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, sourceWidth * components, 2);
+    JSAMPARRAY out = (*decoder->mem->alloc_sarray)(codec, JPOOL_IMAGE, targetWidth * components, 1);
     const Taps columns = makeTaps(codec, sourceWidth, targetWidth);
     const Taps rows = makeTaps(codec, decoder->output_height, targetHeight);
     JSAMPROW previous = lines[0];
@@ -158,13 +158,13 @@ void writeResampled(State* state, JDIMENSION targetWidth, JDIMENSION targetHeigh
         const JSAMPROW top = rows.first[y] == currentIndex ? current : previous;
         const int wy = rows.weight[y];
         for (JDIMENSION x = 0; x < targetWidth; x++) {
-            const int a = columns.first[x] * 3;
-            const int b = columns.second[x] * 3;
+            const int a = columns.first[x] * components;
+            const int b = columns.second[x] * components;
             const int wx = columns.weight[x];
-            for (int c = 0; c < 3; c++) {
+            for (int c = 0; c < components; c++) {
                 const int upper = top[a + c] * (256 - wx) + top[b + c] * wx;
                 const int lower = current[a + c] * (256 - wx) + current[b + c] * wx;
-                out[0][x * 3 + c] = static_cast<JSAMPLE>((upper * (256 - wy) + lower * wy + 32768) >> 16);
+                out[0][x * components + c] = static_cast<JSAMPLE>((upper * (256 - wy) + lower * wy + 32768) >> 16);
             }
         }
         if (jpeg_write_scanlines(&state->encoder, out, 1) != 1) fail(state, TranscodeStatus::InvalidData);
@@ -194,14 +194,17 @@ void run(State* state, int width, int height, int quality, int scaleNumerator,
         decoder->image_height != static_cast<JDIMENSION>(height)) {
         fail(state, TranscodeStatus::InvalidData);
     }
-    // Preserve RGB sample values and their ICC interpretation. CMYK/YCCK require
-    // a separate color-management/metadata contract; never guess a conversion.
+    // Keep the source's own color space so sample values and their ICC interpretation
+    // survive untouched. CMYK/YCCK require a separate color-management/metadata
+    // contract; never guess a conversion.
     if (decoder->data_precision != 8 ||
         (decoder->jpeg_color_space != JCS_RGB && decoder->jpeg_color_space != JCS_YCbCr &&
          decoder->jpeg_color_space != JCS_GRAYSCALE)) {
         fail(state, TranscodeStatus::Unsupported);
     }
-    decoder->out_color_space = JCS_RGB;
+    const J_COLOR_SPACE workingSpace = decoder->jpeg_color_space;
+    const int components = workingSpace == JCS_GRAYSCALE ? 1 : 3;
+    decoder->out_color_space = workingSpace;
     decoder->dct_method = JDCT_ISLOW;
     decoder->scale_num = static_cast<unsigned int>(scaleNumerator);
     decoder->scale_denom = 8;
@@ -216,17 +219,19 @@ void run(State* state, int width, int height, int quality, int scaleNumerator,
     jpeg_stdio_dest(encoder, state->output);
     encoder->image_width = targetWidth;
     encoder->image_height = targetHeight;
-    encoder->input_components = 3;
-    encoder->in_color_space = JCS_RGB;
+    encoder->input_components = components;
+    encoder->in_color_space = workingSpace;
     jpeg_c_set_int_param(encoder, JINT_COMPRESS_PROFILE, JCP_MAX_COMPRESSION);
     jpeg_set_defaults(encoder);
     jpeg_set_quality(encoder, quality, TRUE);
     encoder->dct_method = JDCT_ISLOW;
     encoder->optimize_coding = TRUE;
-    encoder->comp_info[0].h_samp_factor = 2;
-    encoder->comp_info[0].v_samp_factor = 2;
-    encoder->comp_info[1].h_samp_factor = encoder->comp_info[1].v_samp_factor = 1;
-    encoder->comp_info[2].h_samp_factor = encoder->comp_info[2].v_samp_factor = 1;
+    if (components == 3) {
+        encoder->comp_info[0].h_samp_factor = 2;
+        encoder->comp_info[0].v_samp_factor = 2;
+        encoder->comp_info[1].h_samp_factor = encoder->comp_info[1].v_samp_factor = 1;
+        encoder->comp_info[2].h_samp_factor = encoder->comp_info[2].v_samp_factor = 1;
+    }
     // Searching scan layouts roughly doubles encode time for under 1% smaller files.
     jpeg_c_set_bool_param(encoder, JBOOLEAN_OPTIMIZE_SCANS, FALSE);
     jpeg_c_set_bool_param(encoder, JBOOLEAN_TRELLIS_QUANT, TRUE);
@@ -235,10 +240,10 @@ void run(State* state, int width, int height, int quality, int scaleNumerator,
     jpeg_start_compress(encoder, TRUE);
     if (!jpeg_start_decompress(decoder)) fail(state, TranscodeStatus::InvalidData);
     if (targetWidth != decoder->output_width || targetHeight != decoder->output_height) {
-        writeResampled(state, targetWidth, targetHeight);
+        writeResampled(state, targetWidth, targetHeight, components);
     } else {
         JSAMPARRAY row = (*decoder->mem->alloc_sarray)(
-            reinterpret_cast<j_common_ptr>(decoder), JPOOL_IMAGE, decoder->output_width * 3, 1);
+            reinterpret_cast<j_common_ptr>(decoder), JPOOL_IMAGE, decoder->output_width * components, 1);
         while (decoder->output_scanline < decoder->output_height) {
             readRow(state, row);
             if (jpeg_write_scanlines(encoder, row, 1) != 1) fail(state, TranscodeStatus::InvalidData);

@@ -384,7 +384,7 @@ private fun SelectedImageTile(
  */
 private object ThumbnailCache {
     private val cache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) {
-        override fun sizeOf(key: String, value: Bitmap) = value.width * value.height * 4
+        override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
     }
 
     fun get(key: String): Bitmap? = cache.get(key)

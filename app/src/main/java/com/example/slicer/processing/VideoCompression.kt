@@ -60,6 +60,15 @@ private data class SourceVideo(
     val durationUs: Long
 ) {
     val shortSide: Int get() = minOf(width, height)
+
+    fun scaleFor(settings: VideoSettings): Double =
+        if (settings.shortSide != ORIGINAL_RESOLUTION && shortSide > settings.shortSide) {
+            settings.shortSide.toDouble() / shortSide
+        } else {
+            1.0
+        }
+
+    fun outputPixels(scale: Double): Long = (width * scale).roundToInt().toLong() * (height * scale).roundToInt()
 }
 
 private data class ExportAttempt(val videoMimeType: String, val hdrMode: Int)
@@ -86,6 +95,20 @@ internal suspend fun Context.compressVideo(
     requireFreeSpaceFor(inputBytes)
     val source = probeVideo(inputUri)
         ?: return copyUnchanged(this, inputUri, outputFile, inputBytes, metrics, UNSUPPORTED_MESSAGE)
+    // Re-encoding a video that is already this small loses quality for almost no saving.
+    val currentBitrate = sourceBitrate(inputBytes, source.durationUs)
+    if (currentBitrate != null) {
+        val uncappedTarget = targetVideoBitrate(
+            pixels = source.outputPixels(source.scaleFor(settings)),
+            frameRate = source.frameRate,
+            quality = settings.quality,
+            isHevc = hasEncoderFor(MimeTypes.VIDEO_H265),
+            sourceBitrate = null
+        )
+        if (currentBitrate <= uncappedTarget) {
+            return copyUnchanged(this, inputUri, outputFile, inputBytes, metrics, ALREADY_COMPRESSED_MESSAGE)
+        }
+    }
     val captureDate = bestDateFor(inputUri)
 
     val expectedShortSide = if (settings.shortSide != ORIGINAL_RESOLUTION) {
@@ -131,13 +154,9 @@ private suspend fun Context.export(
     onProgress: suspend (Int) -> Unit,
     isCancelled: suspend () -> Boolean
 ): ExportOutcome = withContext(Dispatchers.Main) {
-    val scale = if (settings.shortSide != ORIGINAL_RESOLUTION && source.shortSide > settings.shortSide) {
-        settings.shortSide.toDouble() / source.shortSide
-    } else {
-        1.0
-    }
+    val scale = source.scaleFor(settings)
     val bitrate = targetVideoBitrate(
-        pixels = (source.width * scale).roundToInt().toLong() * (source.height * scale).roundToInt(),
+        pixels = source.outputPixels(scale),
         frameRate = source.frameRate,
         quality = settings.quality,
         isHevc = attempt.videoMimeType == MimeTypes.VIDEO_H265,
@@ -283,6 +302,8 @@ private fun Context.requireFreeSpaceFor(inputBytes: Long) {
 
 private const val UNSUPPORTED_MESSAGE = "This video format can't be converted; the original was copied."
 private const val CONVERSION_FAILED_MESSAGE = "This video couldn't be converted on this phone; the original was copied."
+private const val ALREADY_COMPRESSED_MESSAGE =
+    "This video is already compressed more than this quality would; the original was copied."
 private const val NOT_SMALLER_MESSAGE = "The compressed video wasn't smaller; the original was copied."
 
 private const val PROGRESS_POLL_MILLIS = 500L

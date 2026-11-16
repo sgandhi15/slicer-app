@@ -22,7 +22,7 @@ android {
         externalNativeBuild {
             cmake {
                 // Keep a single source of truth for STL and other CMake flags.
-                arguments.add("-DANDROID_STL=c++_shared")
+                arguments.add("-DANDROID_STL=c++_static")
             }
         }
 

@@ -2,6 +2,7 @@ package com.example.slicer.processing
 
 import android.app.ActivityManager
 import android.content.Context
+import java.io.File
 
 internal data class NativeEncodingBudget(
     val bytes: Long,
@@ -43,17 +44,31 @@ internal fun Context.nativeEncodingBudget(): NativeEncodingBudget {
     )
 }
 
-internal const val MAX_PARALLEL_ENCODERS = 4
+internal const val MAX_PARALLEL_ENCODERS = 6
 private const val PARALLEL_ENCODER_SHARE_BYTES = 400L * 1024 * 1024
 
 /**
  * How many photos to compress at once: each gets at least a 400 MB share of the native budget (about
- * 60 MP), with one share kept spare for an inline retry, and at most one encoder per two cores.
+ * 60 MP), with one share kept spare for an inline retry. Phones that mix fast and slow cores use one
+ * encoder per two cores; phones whose cores are all fast keep only two cores free.
  */
 internal fun Context.parallelEncoderCount(): Int {
     val budget = nativeEncodingBudget()
     if (budget.rejection != null) return 1
     val byMemory = (budget.bytes / PARALLEL_ENCODER_SHARE_BYTES - 1).toInt()
-    val byCores = Runtime.getRuntime().availableProcessors() / 2
+    val cores = Runtime.getRuntime().availableProcessors()
+    val byCores = maxOf(cores / 2, fastCoreCount(cores) - 2)
     return minOf(byMemory, byCores, MAX_PARALLEL_ENCODERS).coerceAtLeast(1)
+}
+
+// Cores whose top speed is within a quarter of the fastest core's; 0 when the speeds can't be read.
+private fun fastCoreCount(cores: Int): Int {
+    val topSpeeds = (0 until cores).map { core ->
+        runCatching {
+            File("/sys/devices/system/cpu/cpu$core/cpufreq/cpuinfo_max_freq").readText().trim().toLong()
+        }.getOrDefault(0L)
+    }
+    val fastest = topSpeeds.maxOrNull() ?: 0L
+    if (fastest <= 0L) return 0
+    return topSpeeds.count { it * 4 >= fastest * 3 }
 }

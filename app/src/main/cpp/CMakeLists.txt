@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-set(CMAKE_ANDROID_STL_TYPE "c++_shared" CACHE STRING "Force matching STL for native codec." FORCE)
-set(ANDROID_STL "c++_shared" CACHE STRING "Force matching STL for native codec." FORCE)
+set(CMAKE_ANDROID_STL_TYPE "c++_static" CACHE STRING "Force matching STL for native codec." FORCE)
+set(ANDROID_STL "c++_static" CACHE STRING "Force matching STL for native codec." FORCE)
 
 project(slicer_mozjpeg)
 
 include(ExternalProject)
 
 set(MOZJPEG_VERSION "v4.1.5")
+set(MOZJPEG_SHA256 "9fcbb7171f6ac383f5b391175d6fb3acde5e64c4c4727274eade84ed0998fcc1")
 set(MOZJPEG_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-src")
 set(MOZJPEG_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-build")
 set(MOZJPEG_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/mozjpeg-install")
@@ -46,11 +47,8 @@ ExternalProject_Add(
     BINARY_DIR "${MOZJPEG_BUILD_DIR}"
     STAMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/mozjpeg/stamp"
     DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/mozjpeg/download"
-    UPDATE_DISCONNECTED 1
-    BUILD_ALWAYS 1
-    GIT_REPOSITORY "https://github.com/mozilla/mozjpeg.git"
-    GIT_TAG "${MOZJPEG_VERSION}"
-    GIT_SHALLOW TRUE
+    URL "https://github.com/mozilla/mozjpeg/archive/refs/tags/${MOZJPEG_VERSION}.tar.gz"
+    URL_HASH "SHA256=${MOZJPEG_SHA256}"
     CMAKE_ARGS
         -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
         # Use the SDK's build tool, not whatever happens to be on PATH.
@@ -82,6 +80,16 @@ ExternalProject_Add(
         "${MOZJPEG_BUILD_DIR}/jconfig.h"
         "${MOZJPEG_INCLUDE_DIR}"
     BUILD_BYPRODUCTS "${MOZJPEG_INSTALL_DIR}/lib/${MOZJPEG_LIBRARY_NAME}"
+)
+
+# The codec is compiled with this header force-included, so a change to it must rebuild the codec.
+ExternalProject_Add_Step(
+    mozjpeg_project
+    allocation_redirect
+    COMMAND ${CMAKE_COMMAND} -E echo "codec_allocation_redirect.h changed; rebuilding MozJPEG"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/codec_allocation_redirect.h"
+    DEPENDEES configure
+    DEPENDERS build
 )
 
 set(MOZJPEG_SOURCE "source:${MOZJPEG_VERSION}")

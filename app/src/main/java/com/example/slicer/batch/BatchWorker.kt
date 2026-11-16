@@ -53,6 +53,10 @@ internal class BatchWorker(
     private val dao = application.database.batchDao()
     private val repository = application.batchRepository
 
+    init {
+        createNotificationChannel()
+    }
+
     override suspend fun doWork(): Result {
         val batchId = inputData.getString(BATCH_ID_KEY) ?: return Result.failure()
         return withOutputLifecycleLock {
@@ -467,7 +471,6 @@ internal class BatchWorker(
     }
 
     private fun createForegroundInfo(batch: BatchEntity?, currentFile: String?): ForegroundInfo {
-        createNotificationChannel()
         val completed = batch?.completedCount ?: 0
         val total = batch?.totalCount ?: 0
         val text = when {

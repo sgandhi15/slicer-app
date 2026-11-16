@@ -174,17 +174,22 @@ internal fun Context.outputFolderAccess(uri: Uri): OutputFolderAccess {
     }
 
     return try {
-        val documentId = DocumentsContract.getTreeDocumentId(uri)
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+        val folderUri = DocumentsContract.buildDocumentUriUsingTree(
+            uri,
+            DocumentsContract.getTreeDocumentId(uri)
+        )
         contentResolver.query(
-            childrenUri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
+            folderUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
             null,
             null,
             null
         )?.use { cursor ->
-            cursor.count
-            OutputFolderAccess.Writable
+            if (cursor.moveToFirst()) {
+                OutputFolderAccess.Writable
+            } else {
+                OutputFolderAccess.TemporarilyUnavailable
+            }
         } ?: OutputFolderAccess.TemporarilyUnavailable
     } catch (_: Exception) {
         OutputFolderAccess.TemporarilyUnavailable
