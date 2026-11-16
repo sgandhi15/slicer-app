@@ -82,7 +82,6 @@ internal suspend fun Context.publishPreparedOutput(
     tempFile: File,
     outputFolderUri: Uri,
     outputName: String,
-    itemId: String,
     onOutputCreationStarting: suspend () -> Unit = {},
     onOutputCleanupConfirmed: suspend () -> Unit = {},
     onOutputCreated: suspend (Uri, String) -> Unit
@@ -95,21 +94,20 @@ internal suspend fun Context.publishPreparedOutput(
     val isMediaStoreOutput = outputFolderUri.isDefaultOutputFolder()
     try {
         currentCoroutineContext().ensureActive()
-        val requestedName = if (isMediaStoreOutput) outputName else recoverableSafOutputName(outputName, itemId)
         val outputUri = withContext(NonCancellable) {
             onOutputCreationStarting()
             val uri = if (isMediaStoreOutput) {
-                createPendingMediaStoreOutput(requestedName)
+                createPendingMediaStoreOutput(outputName)
             } else {
-                createSafOutput(outputFolderUri, requestedName)
+                createSafOutput(outputFolderUri, outputName)
             }
             createdUri = uri
-            onOutputCreated(uri, requestedName)
+            onOutputCreated(uri, outputName)
             uri
         }
 
         val actualName = resolveDisplayName(outputUri)
-        if (actualName != requestedName) {
+        if (actualName != outputName) {
             withContext(NonCancellable) {
                 onOutputCreated(outputUri, actualName)
             }
@@ -180,13 +178,19 @@ internal suspend fun Context.publishPreparedOutput(
     }
 }
 
+/**
+ * Removes this item's output from a chosen folder when its URI was never recorded. Output names carry
+ * the batch and position, so a match is this item's file; the provider may have numbered a duplicate
+ * and videos may have been saved with a different extension.
+ */
 internal fun Context.cleanupUntrackedSafOutput(
     outputFolderUri: Uri,
-    itemId: String
+    outputName: String?
 ): Boolean {
     if (outputFolderUri.isDefaultOutputFolder()) return false
+    if (outputName == null) return true
 
-    val marker = safStagingMarker(itemId)
+    val ownName = Regex("${Regex.escape(outputName.substringBeforeLast('.'))}( \\(\\d+\\))?\\.\\w+")
     return try {
         val treeDocumentId = DocumentsContract.getTreeDocumentId(outputFolderUri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(outputFolderUri, treeDocumentId)
@@ -202,7 +206,7 @@ internal fun Context.cleanupUntrackedSafOutput(
             val nameIndex = cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
             while (cursor.moveToNext()) {
                 val name = cursor.getString(nameIndex).orEmpty()
-                if (marker in name) {
+                if (ownName.matches(name)) {
                     matchingUris += DocumentsContract.buildDocumentUriUsingTree(
                         outputFolderUri,
                         cursor.getString(idIndex)
@@ -217,7 +221,7 @@ internal fun Context.cleanupUntrackedSafOutput(
         }
         cleaned
     } catch (error: Exception) {
-        Log.w(LOG_TAG, "Could not reconcile an untracked SAF output for item '$itemId'.", error)
+        Log.w(LOG_TAG, "Could not reconcile an untracked SAF output '$outputName'.", error)
         false
     }
 }
@@ -313,21 +317,6 @@ private fun Context.createSafOutput(outputFolderUri: Uri, fileName: String): Uri
 private fun outputMimeType(fileName: String) = mediaMimeTypeForName(fileName) ?: "image/jpeg"
 
 private class OutputCreationNotPerformedException(message: String) : IOException(message)
-
-private fun recoverableSafOutputName(outputName: String, itemId: String): String {
-    val dot = outputName.lastIndexOf('.')
-    val extension = if (dot > 0) outputName.substring(dot) else ".jpg"
-    val stem = if (dot > 0) outputName.substring(0, dot) else outputName
-    val marker = safStagingMarker(itemId)
-    val maxStemLength = (180 - marker.length - extension.length).coerceAtLeast(1)
-    return "${stem.ifBlank { "image" }.take(maxStemLength)}$marker$extension"
-}
-
-private fun safStagingMarker(itemId: String): String {
-    val safeId = itemId.replace("[^A-Za-z0-9_-]".toRegex(), "_").ifBlank { "item" }
-    val token = if (safeId.length <= 48) safeId else "${safeId.take(23)}_${safeId.takeLast(24)}"
-    return ".slicer-$token"
-}
 
 private fun Context.finalizePendingMediaStoreOutput(uri: Uri) {
     val values = ContentValues().apply {

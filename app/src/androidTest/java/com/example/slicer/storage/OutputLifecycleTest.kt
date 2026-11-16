@@ -41,7 +41,6 @@ class OutputLifecycleTest {
             tempFile = tempFile,
             outputFolderUri = DEFAULT_OUTPUT_FOLDER_URI,
             outputName = "slicer-test-${UUID.randomUUID()}.jpg",
-            itemId = "pending-test",
             onOutputCreationStarting = { creationJournaled = true }
         ) { uri, _ ->
             assertTrue(creationJournaled)
@@ -67,7 +66,6 @@ class OutputLifecycleTest {
                 tempFile = tempFile,
                 outputFolderUri = DEFAULT_OUTPUT_FOLDER_URI,
                 outputName = "slicer-test-${UUID.randomUUID()}.jpg",
-                itemId = "callback-failure-test",
                 onOutputCleanupConfirmed = { cleanupConfirmed = true }
             ) { uri, _ ->
                 provisionalUri = uri

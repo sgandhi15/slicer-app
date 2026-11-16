@@ -203,7 +203,6 @@ internal class BatchWorker(
                         } else {
                             outputName
                         },
-                        itemId = item.id,
                         onOutputCreationStarting = {
                             check(dao.markOutputCreationStarted(item.id) == 1) {
                                 "Could not journal output creation."

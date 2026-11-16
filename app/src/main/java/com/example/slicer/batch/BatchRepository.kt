@@ -270,7 +270,7 @@ internal class BatchRepository(
             val namesCleaned = destinationUri == null || destinationUri.isDefaultOutputFolder() ||
                 context.cleanupUntrackedSafOutput(
                     outputFolderUri = destinationUri,
-                    itemId = item.id
+                    outputName = item.outputName
                 )
             if (uriCleaned && namesCleaned) {
                 dao.clearIncompleteOutputUri(item.id, item.batchId)
@@ -287,7 +287,7 @@ internal class BatchRepository(
                 destinationUri.isDefaultOutputFolder() -> pendingMediaStoreOutputsCleaned
                 else -> context.cleanupUntrackedSafOutput(
                     outputFolderUri = destinationUri,
-                    itemId = item.id
+                    outputName = item.outputName
                 )
             }
             if (!cleaned) {
